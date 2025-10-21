@@ -1,8 +1,4 @@
-# import Pkg
-# Pkg.activate(".")
-
-include("utils/SndLib_Parser.jl")
-include("utils/SdnGraphUtils.jl")
+include("Utils.jl")
 
 using JuMP
 using CPLEX
@@ -18,151 +14,15 @@ using Printf
 using Graphs
 
 using LinearAlgebra
-using .SNDlibParser
-using .SdnGraphUtils
+using .SDNUtils
 
-"""
-    read_graph(filename)
-
-    Read the SNDlib graph given FILENAME.
-"""
-function read_graph(filename)
-    SNDlibParser.parse_sndlib_graph(read(filename, String))
-end
-
-function read_sndgraph(filename)
-    sndg = read_graph(filename)
-    idx2node = [n.id for n in sndg.nodes]
-	node2idx = Dict(v => i for (i, v) ∈ pairs(idx2node))
-
-	g = SimpleGraph()
-	add_vertices!(g, length(node2idx))
-
-	for e ∈ sndg.edges
-		α, β = e.source, e.target
-		add_edge!(g, node2idx[α], node2idx[β])
-	end
-
-	g_pos = [
-		Point2f(sndg.nodes[i].lon, sndg.nodes[i].lat)
-		for i ∈ 1:length(idx2node)
-	]
-
-	g_labels = idx2node
-
-    (
-        g = g,
-        positions = g_pos,
-        labels = g_labels,
-        idx2node = idx2node,
-        node2idx = node2idx
-    )
-	# g_sndgraph = SDNGraph(g, g_pos, [], [], g_labels)
-end
-
-"""
-The probability `p` returned by the linear program may have values less than `0`. We squeeze these values between 0 and 1 and normalize them to ensure that we have safe probability that we can add to `Distribution`.
-"""
-function safe_probs(p::AbstractVector; tol=1e-12, onzero=:uniform)
-    q = copy(p)
-    # squash signed zeros and tiny negatives
-    q[abs.(q) .< tol] .= 0.0
-    if any(q .< 0)
-        # allow only "numerical dust" negatives
-        if any(q .< -tol)
-            throw(DomainError(p, "contains negative mass < -$tol"))
-        end
-        q[q .< 0] .= 0.0
-    end
-    s = sum(q)
-    if s == 0
-        if onzero === :uniform
-            q .= 1/length(q)
-        else
-            throw(DomainError(p, "all mass was zero after clamping"))
-        end
-    else
-        q ./= s
-    end
-    q
-end
-
-"""
-Project x onto the probability simplex {p ≥ 0, sum(p)=1}.
-Handles NaN/Inf and near-zero sums robustly.
-"""
-function project_simplex(x::AbstractVector{<:Real}; tol=1e-9)
-    @assert all(isfinite, x) "non-finite entry in x"
-    n = length(x)
-    u = sort(collect(x); rev=true)
-    css = cumsum(u)
-    rho = findlast(i -> u[i] + (1 - css[i]) / i > 0, 1:n)
-    theta = (css[rho] - 1) / rho
-    p = max.(x .- theta, 0.0)
-    s = sum(p)
-    if s ≤ tol
-        p .= 1/n
-    else
-        p ./= s
-    end
-    p
-end
-
-"""
-Create a placement of ints `[1, 4, 6]` given some one-encoded vector.
-"""
-function to_placement(placement_bits)
-	sort(Int.(findall(BitVector(round.(placement_bits)))))
-end
-
-"""
-Generate a `V`-sized vector with `K` ones.
-"""
-function gen_one_hot(V :: Int, K :: Int)
-	v = vcat(ones(Int, K), zeros(Int, V - K))
-	shuffle!(v)
-	sort(to_placement(v))
-end
-
-function attack_graph(
-    g :: SimpleGraph,
-    attack :: Vector{Int}
-)
-	non_attacked_nodes = setdiff(1:nv(g), attack)
-	induced_subgraph(g, non_attacked_nodes)
-end
-
-"""
-    game_outcome(
-        g :: AbstractSndGraph,
-        s :: Vector{Int},
-        a :: Vector{Int}
-    )
-
-Count the number of surviving nodes given the placement s and the
-attack a.
-"""
-function game_outcome(
-    g :: SimpleGraph,
-    s :: Vector{Int},
-    a :: Vector{Int}
-)
-	# How many nodes survive attack a given placement s
-	attacked_g, vmap = attack_graph(g, a)
-
-	surviving_nodes = filter(
-		c -> intersect(s, vmap[c]) != [],
-		connected_components(attacked_g)
-	)
-
-	sum(length.(surviving_nodes))
-end
+DEFAULT_OPTIMIZER = CPLEX.Optimizer
 
 function cpop(
 	g :: SimpleGraph, 
 	num_controllers :: Int,
 	attacks :: Vector{Vector{Int}};
-	solver = CPLEX.Optimizer,
+	solver = DEFAULT_OPTIMIZER,
 )
 	m = Model(solver)
 	V = nv(g)
@@ -209,7 +69,7 @@ function naop(
 	g :: SimpleGraph,
 	K :: Int,
 	controller_placements :: Vector{Vector{Int}};
-	solver = CPLEX.Optimizer,
+	solver = DEFAULT_OPTIMIZER,
 )
 	m = Model(solver)
 
@@ -280,7 +140,7 @@ end
 
 function controller_placement_optimization(
     g :: SimpleGraph, M :: Int, K :: Int;
-    TOL :: Float64 =1e-6, silent = false
+    TOL :: Float64 = 1e-6, silent = false
 )
 
 	attack_set = Vector{Int}[]
@@ -288,7 +148,7 @@ function controller_placement_optimization(
 	Z_star = Float64(nv(g))
 
 	# STEP 0: Generate a random M-node controller placement s*
-	s_star = gen_one_hot(nv(g), M)
+	s_star = gen_random_vector(nv(g), M)
 	n_iterations = 0
     naop_times = []
     cpop_times = []
@@ -310,7 +170,7 @@ function controller_placement_optimization(
 		a_star = to_placement(value.(a_star))
 		Z_star = objective_value(naop_model)
 
-		if Z_star >= Y_star#  - TOL
+		if Z_star >= Y_star - TOL
 			break
 		end
 
@@ -441,7 +301,7 @@ function master_placement(
 	# P[S, A] = Find optimal decision probability decision for the defender over the
 	# set of all placements and attacks
 
-	m = Model(CPLEX.Optimizer)
+	m = Model(DEFAULT_OPTIMIZER)
 	set_silent(m)
 
 	n_placements = length(placements)
@@ -474,7 +334,7 @@ function pricing_placement(
 	# p_star - Current attacker's probability distribution
 	
 	V = nv(g)
-	m = Model(CPLEX.Optimizer)
+	m = Model(DEFAULT_OPTIMIZER)
 	set_silent(m)
 	attack_len = length(attack_set)
 
@@ -514,7 +374,7 @@ function pricing_attack(
 	controller_set :: Vector{Vector{Int}},
 	q_star :: Vector{Float64}
 )
-	m = Model(CPLEX.Optimizer)
+	m = Model(DEFAULT_OPTIMIZER)
 	set_silent(m)
 
 	# Consider only the controller placements with q > 0
@@ -565,8 +425,8 @@ function mixed_strategy_algorithm(
 	# delays = precalc_delays(g)
 	
 	# Random attack and random placement of size M and K
-	s = gen_one_hot(nv(g), M)
-	a = gen_one_hot(nv(g), K)
+	s = gen_random_vector(nv(g), M)
+	a = gen_random_vector(nv(g), K)
 
 	placements = [s]
 	attacks = [a]
