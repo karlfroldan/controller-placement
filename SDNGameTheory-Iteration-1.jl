@@ -12,11 +12,119 @@ using StatsBase
 using Printf
 
 using Graphs
+using SimpleWeightedGraphs
 
 using LinearAlgebra
-using .SDNUtils
+import .SDNUtils
 
 DEFAULT_OPTIMIZER = CPLEX.Optimizer
+
+"""
+    controller_delays(g :: SimpleWeightedGraph, placement :: Vector{Int})
+
+Returns a vector that contains the delays between the controllers.
+"""
+function controller_delays(g :: SimpleWeightedGraph, placement :: AbstractVector{Int}) Vector{Float64}
+    d_table = precalc_delays(g)
+
+    seen = Set{Tuple{Int, Int}}()
+    delays = Float64[]
+
+    for (v, w) in Iterators.product(placement, placement)
+        if v == w
+            continue
+        end
+
+        if (w, v) ∉ seen
+            push!(delays, d_table[v, w])
+            push!(seen, (v, w))
+        end
+    end
+
+    delays
+end
+
+function weight_matrix(graph :: SimpleWeightedGraph)
+	n = nv(graph)
+	W = fill(Inf, n, n)
+
+	for e ∈ edges(graph)
+		u, v = src(e), dst(e)
+		w = weight(e)
+		W[u, v] = w
+		W[v, u] = w
+	end 
+
+	@inbounds for i ∈ 1:n
+		W[i, i] = 0.0
+	end
+	W
+end
+
+function precalc_delays(graph :: SimpleWeightedGraph)
+	n = nv(graph)
+	W = weight_matrix(graph)
+	# Delay is represented by the matrix of size VxV where the path from v to w
+	# has delay D_{v, w}
+	D = fill(Inf, n, n)
+
+	for v ∈ vertices(graph)
+		state = dijkstra_shortest_paths(graph, v, W)
+		D[v, :] = state.dists
+	end
+	D
+end
+
+function minmax_sc_delay(g :: SimpleWeightedGraph, M :: Int, bsc = 0.0, bcc = 0.0)
+    m = Model(DEFAULT_OPTIMIZER)
+    set_silent(m)
+
+    delay_table = precalc_delays(g)
+    V = nv(g)
+
+    @variable(m, D)
+    # Controller placements
+    @variable(m, s[1:V], Bin)
+    # z_vw = 1 iff switch in v is assigned to controller w
+    # @variable(m, z[
+    Ws = Dict(v => sort([w for w in vertices(g) if delay_table[v, w] ≤ bsc]) for v in vertices(g))
+
+    z = [@variable(m, [Ws[v]], Bin) for v in vertices(g)]
+
+    # (A1b)
+    @constraint(m, sum(s) == M) # M controllers required
+
+    # (A1c)
+    U = Vector{Tuple{Int, Int}}()
+    for (v, w) in Iterators.product(vertices(g), vertices(g))
+        if delay_table[v, w] > bcc && (w, v) ∉ U
+            push!(U, (v, w))
+            @constraint(m, s[v] + s[w] ≤ 1)
+        end
+    end
+
+    # (A1d)
+    for (k, w) in Ws
+        @constraint(m, sum(z[k]) == 1)
+    end
+
+    for v in vertices(g)
+        ws = setdiff(Ws[v], [v])
+        
+        # (A1e)
+        @constraint(m, z[v][ws] .≤ s[ws])
+        # (A1f)
+        @constraint(m, z[v][v] == s[v])
+
+        # (A1g)
+        ds = delay_table[v, Ws[v]]
+        @constraint(m, D ≥ sum(ds .* z[v]))
+    end
+
+    @objective(m, Min, D)
+    
+    m, D
+end
 
 function cpop(
 	g :: SimpleGraph, 
@@ -50,7 +158,7 @@ function cpop(
 	# If the component c does not contain any controller, then every y_{v, a} = 0
 	# First, let's get all the components resaulting from a given attack a
 	for (i, a) ∈ enumerate(attacks)
-		g_attacked, vmap = attack_graph(g, a)
+		g_attacked, vmap = SDNUtils.attack_graph(g, a)
 		C = connected_components(g_attacked)
 
 		@constraint(m, [c in C], sum(y[vmap[c], i]) ≤ length(c) * sum(s[vmap[c]]))
@@ -148,7 +256,7 @@ function controller_placement_optimization(
 	Z_star = Float64(nv(g))
 
 	# STEP 0: Generate a random M-node controller placement s*
-	s_star = gen_random_vector(nv(g), M)
+	s_star = SDNUtils.gen_random_vector(nv(g), M)
 	n_iterations = 0
     naop_times = []
     cpop_times = []
@@ -167,7 +275,7 @@ function controller_placement_optimization(
 
         push!(naop_times, time_end - time_begin)
 		
-		a_star = to_placement(value.(a_star))
+		a_star = SDNUtils.to_placement(value.(a_star))
 		Z_star = objective_value(naop_model)
 
 		if Z_star >= Y_star - TOL
@@ -193,7 +301,7 @@ function controller_placement_optimization(
 
 		assert_is_solved_and_feasible(cpop_model)
 
-		s_star = to_placement(value.(s_star))
+		s_star = SDNUtils.to_placement(value.(s_star))
 		Y_star = objective_value(cpop_model)
 		n_iterations += 1
 
@@ -229,7 +337,7 @@ function attack_optimization(
 	# STEP 0: Generate a random K-node attack a*
 	a_star = vcat(ones(Int, K), zeros(Int, nv(g) - K))
 	shuffle!(a_star)
-	a_star = to_placement(a_star)
+	a_star = SDNUtils.to_placement(a_star)
 	n_iterations = 0
 
 	cpop_times = []
@@ -248,7 +356,7 @@ function attack_optimization(
 
 		is_solved_and_feasible(cpop_model)
 
-		s_star = to_placement(value.(s_star))
+		s_star = SDNUtils.to_placement(value.(s_star))
 		Y_star = objective_value(cpop_model)
 
 		# println("[$n_iterations] Z_star = $Z_star, Y_star = $Y_star")
@@ -271,7 +379,7 @@ function attack_optimization(
 
 		is_solved_and_feasible(naop_model)
 
-		a_star = to_placement(value.(a_star))
+		a_star = SDNUtils.to_placement(value.(a_star))
 		Z_star = objective_value(naop_model)
 
         if !silent
@@ -296,7 +404,7 @@ end
 
 
 function master_placement(
-    g :: SimpleGraph, placements :: Vector{Vector{Int}}, attacks :: Vector{Vector{Int}}
+    g :: AbstractGraph, placements :: Vector{Vector{Int}}, attacks :: Vector{Vector{Int}}
 )
 	# P[S, A] = Find optimal decision probability decision for the defender over the
 	# set of all placements and attacks
@@ -316,7 +424,7 @@ function master_placement(
 	# Game outcome constraints. Their dual is p
 	p_dual = ConstraintRef[]
 	for a ∈ attacks
-		vs = [game_outcome(g, s, a) for s ∈ placements]
+		vs = [SDNUtils.game_outcome(g, s, a) for s ∈ placements]
 		c = @constraint(m, y ≤ sum(vs .* q))
 		push!(p_dual, c)
 	end
@@ -324,8 +432,8 @@ function master_placement(
 	m, q, p_dual
 end
 
-function pricing_placement(
-	g :: SimpleGraph,
+function pricing_placement_aux(
+	g :: AbstractGraph,
 	M :: Int,
 	attack_set :: Vector{Vector{Int}},
 	p_star :: Vector{Float64}
@@ -355,7 +463,7 @@ function pricing_placement(
 		@constraint(m, [v in a], y[v, i] == 0)
 
 		# (24d) Try to ensure that each component has a surviving controller
-		attacked_g, vmap = attack_graph(g, a)
+		attacked_g, vmap = SDNUtils.attack_graph(g, a)
 		for c ∈ connected_components(attacked_g)
 			c′ = vmap[c]
 			@constraint(m, sum(y[c′, i]) ≤ length(c′) * sum(s[c′]))
@@ -364,12 +472,64 @@ function pricing_placement(
 		# (24e) Make y and Y correspond to each other 
 		@constraint(m, Y[i] == sum(y[:, i]))
 	end
-	
-	m, s
+
+	(
+        model = m,
+        s = s,
+        y = y,
+        Y = y
+    )
+end
+
+
+function pricing_placement(
+    g :: SimpleWeightedGraph,
+    M :: Int,
+    attack_set :: Vector{Vector{Int}},
+    p_star :: Vector{Float64},
+    delay_table :: Matrix{Float64},
+    bcc :: Float64,
+    bsc :: Float64
+    )
+    # V = nv(g)
+    
+    out = pricing_placement_aux(g, M, attack_set, p_star)
+    m = out.model
+    s = out.s
+    # Y = out.Y
+    # y = out.y
+
+    # Set of nodes that for every v in vertex set,
+    # satisfies the BSC constraint
+    for v in vertices(g)
+        d = delay_table[v, :] .< bsc
+        @constraint(m, sum(d .* s) ≥ 1)
+    end
+
+    # Get all node pairs that violate BCC
+    U = Vector{Tuple{Int, Int}}()
+    for (v, w) in Iterators.product(vertices(g), vertices(g))
+        if delay_table[v, w] > bcc && (w, v) ∉ U
+            push!(U, (v, w))
+            @constraint(m, s[v] + s[w] ≤ 1)
+        end
+    end
+
+    m, s
+end
+
+function pricing_placement(
+	g :: AbstractGraph,
+	M :: Int,
+	attack_set :: Vector{Vector{Int}},
+	p_star :: Vector{Float64}
+)
+    out = pricing_placement_aux(g, M, attack_set, p_star)
+    out.model, out.s
 end
 
 function pricing_attack(
-	g :: SimpleGraph,
+	g :: AbstractGraph,
 	K :: Int,
 	controller_set :: Vector{Vector{Int}},
 	q_star :: Vector{Float64}
@@ -417,16 +577,23 @@ function pricing_attack(
 end
 
 function mixed_strategy_algorithm(
-	g :: SimpleGraph, 
+	g :: AbstractGraph, 
 	M :: Int, K :: Int;
     silent = false,
-    TOL = 1e-8
+    TOL = 1e-8,
+    bcc :: Float64 = 0.0,
+    bsc :: Float64 = 0.0,
+    has_delays = false
 )
-	# delays = precalc_delays(g)
+    if has_delays
+        @assert(bsc != 0.0)
+        @assert(bcc != 0.0)
+        delay_table = precalc_delays(g)
+    end
 	
 	# Random attack and random placement of size M and K
-	s = gen_random_vector(nv(g), M)
-	a = gen_random_vector(nv(g), K)
+	s = SDNUtils.gen_random_vector(nv(g), M)
+	a = SDNUtils.gen_random_vector(nv(g), K)
 
 	placements = [s]
 	attacks = [a]
@@ -437,7 +604,7 @@ function mixed_strategy_algorithm(
 
 	# Obviously, both will be [1.0] at first
 	q = value.(q)
-	p = project_simplex(-dual.(shadow_prices))
+	p = SDNUtils.project_simplex(-dual.(shadow_prices))
 
 	x_star = dual_objective_value(master)
 	y_star = objective_value(master)
@@ -461,7 +628,11 @@ function mixed_strategy_algorithm(
         has_updated = false
 		
 		# Solve the placement generation problem to get a new placement s'
-		cp, s = pricing_placement(g, M, attacks, p)
+        if has_delays
+            cp, s = pricing_placement(g, M, attacks, p, delay_table, bcc, bsc)
+        else
+		    cp, s = pricing_placement(g, M, attacks, p)
+        end
 
         time_begin = time()
 		optimize!(cp)
@@ -473,9 +644,9 @@ function mixed_strategy_algorithm(
         end
         
 		assert_is_solved_and_feasible(cp)
-		s = to_placement(value.(s))
+		s = SDNUtils.to_placement(value.(s))
 		# Generated a new placement s
-		outcomes = [game_outcome(g, s, a′) for a′ ∈ attacks]
+		outcomes = [SDNUtils.game_outcome(g, s, a′) for a′ ∈ attacks]
 		expected = outcomes ⋅ p
 
         if !silent
@@ -501,7 +672,7 @@ function mixed_strategy_algorithm(
 		assert_is_solved_and_feasible(master)
 
 		q = value.(q)
-		p = project_simplex(-dual.(shadow_prices))
+		p = SDNUtils.project_simplex(-dual.(shadow_prices))
 
 		x_star = dual_objective_value(master)
 		y_star = objective_value(master)
@@ -519,8 +690,8 @@ function mixed_strategy_algorithm(
 
 		assert_is_solved_and_feasible(na)
 
-		a = to_placement(value.(a))
-		outcomes = [game_outcome(g, s′, a) for s′ ∈ placements]
+		a = SDNUtils.to_placement(value.(a))
+		outcomes = [SDNUtils.game_outcome(g, s′, a) for s′ ∈ placements]
 		expected = outcomes ⋅ q
 
         if !silent
@@ -545,7 +716,7 @@ function mixed_strategy_algorithm(
         end
 
 		q = value.(q)
-		p = project_simplex(-dual.(shadow_prices))
+		p = SDNUtils.project_simplex(-dual.(shadow_prices))
 		x_star = dual_objective_value(master)
 		y_star = objective_value(master)
 
@@ -617,7 +788,20 @@ function outcome_table(g, M_max :: Int, K_max :: Int; K_min :: Int = 2, full = f
             minmax = v_minmax_table[:, K_min:K_max],
 	        maxmin = v_maxmin_table[:, K_min:K_max],
 	        v_star = v_star_table
-        )        
+        )
     end
+end
 
+"""
+    sample_strategy(action :: AbstractVector{Vector{Int64}}, distribution :: AbstractVector{Float64})
+
+Given a list of strategies and a corresponding probability distribution, sample a strategy.
+"""
+function sample_strategy(action :: AbstractVector{Vector{Int64}}, distribution :: AbstractVector{Float64})
+    TOL = 1e-9
+    @assert(sum(distribution) >= 1.0 - TOL)
+    @assert(length(action) == length(distribution))
+
+    dist = Distributions.Categorical(distribution)
+    action[rand(dist)]
 end

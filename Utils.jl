@@ -32,17 +32,45 @@ function read_graph(filename)
     SNDlibParser.parse_sndlib_graph(read(filename, String))
 end
 
-function read_sndgraph(filename)
+function euclidean_distance(v1, v2)
+    sqrt((v1[1] - v2[1])^2 + (v1[2] - v2[2])^2)
+end
+
+function haversine_distance(v, w)
+	r = 6371.0 # Earth's Radius
+	# https://en.wikipedia.org/wiki/Haversine_formula
+	radians(x) = x * (pi / 180)
+
+	ϕ1, λ1 = radians(v[2]), radians(v[1])
+	ϕ2, λ2 = radians(w[2]), radians(w[1])
+	Δϕ = ϕ2 - ϕ1
+	Δλ = λ2 - λ1
+
+	a = sin(Δϕ / 2)^2 + cos(ϕ1) * cos(ϕ2) * sin(Δλ / 2)^2
+	2r * atan(sqrt(a), sqrt(1 - a))
+end
+
+function read_sndgraph(filename; weighted = false)
     sndg = read_graph(filename)
     idx2node = [n.id for n in sndg.nodes]
 	node2idx = Dict(v => i for (i, v) ∈ pairs(idx2node))
 
-	g = SimpleGraph()
+	g = weighted ? SimpleWeightedGraph() : SimpleGraph()
 	add_vertices!(g, length(node2idx))
 
+    distances = Dict(v.id => (v.lon, v.lat) for v in sndg.nodes)
+    
 	for e ∈ sndg.edges
 		α, β = e.source, e.target
-		add_edge!(g, node2idx[α], node2idx[β])
+
+        if weighted
+            v1 = node2idx[α]
+            v2 = node2idx[β]
+            # @show v1, v2, haversine_distance(distances[α], distances[β])
+            add_edge!(g, v1, v2, haversine_distance(distances[α], distances[β]))
+        else
+            add_edge!(g, node2idx[α], node2idx[β])
+        end
 	end
 
 	g_pos = [
