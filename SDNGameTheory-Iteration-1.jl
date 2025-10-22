@@ -19,6 +19,26 @@ import .SDNUtils
 
 DEFAULT_OPTIMIZER = CPLEX.Optimizer
 
+macro time_only(exp)
+    quote
+        local _t0 = time_ns()
+        $(esc(exp))
+        local _t1 = time_ns()
+        (_t1 - _t0) / 1e9
+    end
+end
+
+"Returns (value, elapsed seconds)"
+macro time_val(expression)
+    quote
+        local _to = time_ns()
+        local _val = $(esc(expression))
+        local _t1 = time_ns()
+
+        (_val, (_t1 - _t0) / 1e9)
+    end
+end
+
 """
     controller_delays(g :: SimpleWeightedGraph, placement :: Vector{Int})
 
@@ -156,7 +176,7 @@ function cpop(
 	end
 
 	# If the component c does not contain any controller, then every y_{v, a} = 0
-	# First, let's get all the components resaulting from a given attack a
+	# First, let's get all the components resulting from a given attack a
 	for (i, a) ∈ enumerate(attacks)
 		g_attacked, vmap = SDNUtils.attack_graph(g, a)
 		C = connected_components(g_attacked)
@@ -248,7 +268,7 @@ end
 
 function controller_placement_optimization(
     g :: SimpleGraph, M :: Int, K :: Int;
-    TOL :: Float64 = 1e-6, silent = false
+    TOL :: Float64 = 1e-6
 )
 
 	attack_set = Vector{Int}[]
@@ -267,13 +287,11 @@ function controller_placement_optimization(
 		placements = [s_star]
 		naop_model, a_star = naop(g, K, placements)
 
-        time_begin = time()
-		optimize!(naop_model)
-        time_end = time()
+		elapsed = @time_only(optimize!(naop_model))
 
 		assert_is_solved_and_feasible(naop_model)
 
-        push!(naop_times, time_end - time_begin)
+        push!(naop_times, elapsed)
 		
 		a_star = SDNUtils.to_placement(value.(a_star))
 		Z_star = objective_value(naop_model)
@@ -281,11 +299,6 @@ function controller_placement_optimization(
 		if Z_star >= Y_star - TOL
 			break
 		end
-
-        if !silent
-            @printf("    [%d] POST-NAOP: Z* = %.2f, time = %.5f\n", n_iterations, Z_star,
-                    time_end - time_begin)
-        end
 
 		# STEP 2: A = A union {a*}. Then solve P[M, A] to get placement s*. Repeat
 		if !(a_star ∈ attack_set)
@@ -295,9 +308,7 @@ function controller_placement_optimization(
 		end
 
 		cpop_model, s_star = cpop(g, M, attack_set)
-        time_begin = time()
-		optimize!(cpop_model)
-        time_end = time()
+		elapsed = @time_only(optimize!(cpop_model))
 
 		assert_is_solved_and_feasible(cpop_model)
 
@@ -305,29 +316,15 @@ function controller_placement_optimization(
 		Y_star = objective_value(cpop_model)
 		n_iterations += 1
 
-        if !silent
-            @printf("    [%d] POST-CPOP: time = %.5f\n", n_iterations, time_end - time_begin)
-            @printf("    [%d] a_star = %s\n", n_iterations, a_star)
-            @printf("    [%d] s_star = %s\n", n_iterations, s_star)
-            @printf("    [%d] Controller Placement Optimization: Y* = %.2lf, Z* = %.2lf\n", n_iterations, Y_star, Z_star)
-        end
-
-        push!(cpop_times, time_end - time_begin)
+        push!(cpop_times, elapsed)
 	end
-
-    if !silent
-        @printf("CONTROLLER PURE [%d] # of generated attacks: %d\n", n_iterations, length(attack_set))
-        @printf("CONTROLLER PURE [%d] cpop time total, H-mean: (%.5f, %.5f), naop time total, H-mean: (%.5f, %.5f)\n",
-                n_iterations, sum(cpop_times), harmmean(cpop_times),
-                sum(naop_times), harmmean(naop_times))
-    end
 
 	s_star, Y_star
 end
 
 function attack_optimization(
     g :: SimpleGraph, M :: Int, K :: Int;
-    TOL :: Float64 = 1e-6, silent = false
+    TOL :: Float64 = 1e-6
 )
 
 	placement_set = Vector{Int}[]
@@ -349,10 +346,8 @@ function attack_optimization(
 		attack_set = [a_star]
 		cpop_model, s_star = cpop(g, M, attack_set)
 
-		begin_time = time()
-		optimize!(cpop_model)
-		elapsed_time = time() - begin_time
-		push!(cpop_times, elapsed_time)
+		elapsed = @time_only(optimize!(cpop_model))
+		push!(cpop_times, elapsed)
 
 		is_solved_and_feasible(cpop_model)
 
@@ -372,30 +367,16 @@ function attack_optimization(
 		end
 
 		naop_model, a_star = naop(g, K, placement_set)
-		begin_time = time()
-		optimize!(naop_model)
-		elapsed_time = time() - begin_time
-		push!(naop_times, elapsed_time)
+		elapsed = @time_only(optimize!(naop_model))
+		push!(naop_times, elapsed)
 
 		is_solved_and_feasible(naop_model)
 
 		a_star = SDNUtils.to_placement(value.(a_star))
 		Z_star = objective_value(naop_model)
 
-        if !silent
-            @printf("    [%d] a_star = %s\n", n_iterations, a_star)
-            @printf("    [%d] s_star = %s\n", n_iterations, s_star)
-            @printf("    [%d] Attack Optimization: Y* = %.2lf, Z* = %.2lf\n", n_iterations, Y_star, Z_star)
-        end
-
 		n_iterations += 1
 	end
-    
-    if !silent
-        @printf("ATTACKER PURE [%d] cpop time total, H-mean: (%.5f, %.5f), naop time total, H-mean: (%.5f, %.5f)\n",
-                n_iterations, sum(cpop_times), harmmean(cpop_times),
-                sum(naop_times), harmmean(naop_times))
-    end
 
 	# STEP 3: STOP. Current Placement s* is an optimal solution
 	
@@ -579,7 +560,6 @@ end
 function mixed_strategy_algorithm(
 	g :: AbstractGraph, 
 	M :: Int, K :: Int;
-    silent = false,
     TOL = 1e-8,
     bcc :: Float64 = 0.0,
     bsc :: Float64 = 0.0,
@@ -608,23 +588,19 @@ function mixed_strategy_algorithm(
 
 	x_star = dual_objective_value(master)
 	y_star = objective_value(master)
-
-	# @show x_star, y_star
-
-    placement_times = []
-    attack_times = []
+    
     n_iterations = 0
 
     has_updated = true
 
-    if !silent
-        @printf("RUNNING MIXED-STRATEGY FOR M=%d, K=%d\n", M, K)
-    end
+    time_placement = Float64[]
+    time_attack = Float64[]
+    time_master = Float64[]
+
+    stat_v_star = Float64[]
+    stat_expected_value = Float64[]
 
 	while has_updated
-        if !silent
-            @printf("    ---- Iteration %d ----\n", n_iterations)
-        end
         has_updated = false
 		
 		# Solve the placement generation problem to get a new placement s'
@@ -634,14 +610,8 @@ function mixed_strategy_algorithm(
 		    cp, s = pricing_placement(g, M, attacks, p)
         end
 
-        time_begin = time()
-		optimize!(cp)
-        time_end = time()
-
-        push!(placement_times, time_end - time_begin)
-        if !silent
-            @printf("    [%d] pricing placement time: %.5f\n", n_iterations, time_end - time_begin)
-        end
+		elapsed = @time_only(optimize!(cp))
+        push!(time_placement, elapsed)
         
 		assert_is_solved_and_feasible(cp)
 		s = SDNUtils.to_placement(value.(s))
@@ -649,9 +619,6 @@ function mixed_strategy_algorithm(
 		outcomes = [SDNUtils.game_outcome(g, s, a′) for a′ ∈ attacks]
 		expected = outcomes ⋅ p
 
-        if !silent
-            @printf("    [%d] Expected Value = %.5f, x_star = %.5f\n", n_iterations, expected, x_star)
-        end
 		if expected > x_star - TOL
 			if s ∉ placements
 				has_updated = true
@@ -661,13 +628,7 @@ function mixed_strategy_algorithm(
 
 		# Then solve the master problem again.
 		master, q, shadow_prices = master_placement(g, placements, attacks)
-        time_begin = time()
-		optimize!(master)
-        time_end = time()
-
-        if !silent
-            @printf("    [%d] master time: %.5f\n", n_iterations, time_end - time_begin)
-        end
+		time_master_elapsed = @time_only(optimize!(master))
         
 		assert_is_solved_and_feasible(master)
 
@@ -677,26 +638,18 @@ function mixed_strategy_algorithm(
 		x_star = dual_objective_value(master)
 		y_star = objective_value(master)
 
+        @assert(x_star >= y_star - TOL)
+
 		# Then generate a new attack
 		na, a = pricing_attack(g, K, placements, q)
-        time_begin = time()
-		optimize!(na)
-        time_end = time()
-        push!(attack_times, time_end - time_begin)
-
-        if !silent
-            @printf("    [%d] pricing attack time: %.5f\n", n_iterations, time_end - time_begin)
-        end
+		elapsed = @time_only(optimize!(na))
+        push!(time_attack, elapsed)
 
 		assert_is_solved_and_feasible(na)
 
 		a = SDNUtils.to_placement(value.(a))
 		outcomes = [SDNUtils.game_outcome(g, s′, a) for s′ ∈ placements]
 		expected = outcomes ⋅ q
-
-        if !silent
-            @printf("    [%d] Expected Value = %.5f, y_star = %.5f\n", n_iterations, expected, y_star)
-        end
 		
 		if y_star > expected - TOL
 			if a ∉ attacks
@@ -706,35 +659,35 @@ function mixed_strategy_algorithm(
 		end
 
 		master, q, shadow_prices = master_placement(g, placements, attacks)
-        time_begin = time()
-		optimize!(master)
-        time_end = time()
+		time_master_elapsed += @time_only(optimize!(master))
 		assert_is_solved_and_feasible(master)
-
-        if !silent
-            @printf("    [%d] master time: %.5f\n", n_iterations, time_end - time_begin)
-        end
+        
+        push!(time_master, time_master_elapsed)
 
 		q = value.(q)
 		p = SDNUtils.project_simplex(-dual.(shadow_prices))
 		x_star = dual_objective_value(master)
 		y_star = objective_value(master)
 
+        @assert(x_star >= y_star - TOL)
+
+        push!(stat_v_star, x_star)
+        push!(stat_expected_value, expected)
+
         n_iterations += 1
 	end
-
-    if !silent
-        @printf("MIXED-STRATEGIES [%d] placement time total, H-mean: (%.5f, %.5f), attack time total, H-mean: (%.5f, %.5f)\n",
-                n_iterations, sum(placement_times), harmmean(placement_times),
-                sum(attack_times), harmmean(attack_times))
-    end
 
     (
         p_star = p,
         q_star = q,
         V_star = x_star,
         attacks = attacks,
-        placements = placements
+        placements = placements,
+        stats_v_star = stat_v_star,
+        stats_expected_values = stat_expected_value,
+        stats_time_placement = time_placement,
+        stats_time_attack = time_attack,
+        stats_time_master = time_master
     )
 end
 
@@ -804,4 +757,17 @@ function sample_strategy(action :: AbstractVector{Vector{Int64}}, distribution :
 
     dist = Distributions.Categorical(distribution)
     action[rand(dist)]
+end
+
+function plot_vstar_and_expected(v_star :: AbstractVector{Float64}, expected :: AbstractVector{Float64})
+    @assert(length(v_star) == length(expected))
+
+    n = length(v_star)
+
+    f = Figure()
+    ax = Axis(f[1, 1])
+    lines!(ax, 1:n, v_star)
+    lines!(ax, 1:n, expected)
+
+    f
 end
