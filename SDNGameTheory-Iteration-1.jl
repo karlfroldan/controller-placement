@@ -101,6 +101,7 @@ function minmax_sc_delay(g :: SimpleWeightedGraph, M :: Int, bsc = 0.0, bcc = 0.
 
     delay_table = precalc_delays(g)
     V = nv(g)
+    # @show delay_table
 
     @variable(m, D)
     # Controller placements
@@ -142,12 +143,16 @@ function minmax_sc_delay(g :: SimpleWeightedGraph, M :: Int, bsc = 0.0, bcc = 0.
     end
 
     @objective(m, Min, D)
+
+    optimize!(m)
+    # @show objective_value(m)
     
-    m, D
+    # m, D
+    value(D)
 end
 
 function cpop(
-	g :: SimpleGraph, 
+	g :: AbstractGraph, 
 	num_controllers :: Int,
 	attacks :: Vector{Vector{Int}};
 	solver = DEFAULT_OPTIMIZER,
@@ -189,12 +194,79 @@ function cpop(
 	for i ∈ eachindex(attacks)
 		@constraint(m, Y ≤ sum(y[:, i]))
 	end
-	
+
+	m, s
+end
+
+function cpop_with_delays(
+	g :: SimpleWeightedGraph, 
+	num_controllers :: Int,
+	attacks :: Vector{Vector{Int}},
+    bsc :: Float64,
+    bcc :: Float64;
+	solver = DEFAULT_OPTIMIZER,
+)
+	m = Model(solver)
+	V = nv(g)
+	attack_size = length(attacks)
+
+	set_silent(m)
+
+    delay_table = precalc_delays(g)
+
+	# Controller placement variables
+	@variable(m, s[1:V], Bin)
+	# Variable to determine whether the node survives attack
+	@variable(m, y[1:V, 1:attack_size], Bin)
+	# Value to maximize
+	@variable(m, Y ≥ 0)
+
+	@objective(m, Max, Y)
+
+	# Constraint on the number of controllers
+	@constraint(m, sum(s) == num_controllers)
+
+	# All nodes that were attacked should not have survived that attack
+	for (i, a) ∈ enumerate(attacks)
+		@constraint(m, [v in a], y[v, i] == 0)
+	end
+
+    # Set of nodes that for every v in vertex set,
+    # satisfies the BSC constraint
+    for v in vertices(g)
+        d = delay_table[v, :] .< bsc
+        @constraint(m, sum(d .* s) ≥ 1)
+    end
+
+    # Get all node pairs that violate BCC
+    U = Vector{Tuple{Int, Int}}()
+    for (v, w) in Iterators.product(vertices(g), vertices(g))
+        if delay_table[v, w] > bcc && (w, v) ∉ U
+            push!(U, (v, w))
+            @constraint(m, s[v] + s[w] ≤ 1)
+        end
+    end
+
+	# If the component c does not contain any controller, then every y_{v, a} = 0
+	# First, let's get all the components resulting from a given attack a
+	for (i, a) ∈ enumerate(attacks)
+		g_attacked, vmap = SDNUtils.attack_graph(g, a)
+		C = connected_components(g_attacked)
+
+		@constraint(m, [c in C], sum(y[vmap[c], i]) ≤ length(c) * sum(s[vmap[c]]))
+	end
+
+	# Last constraint : For every attack, maximize the number of surviving nodes
+	# Above Y, in the best case
+	for i ∈ eachindex(attacks)
+		@constraint(m, Y ≤ sum(y[:, i]))
+	end
+
 	m, s
 end
 
 function naop(
-	g :: SimpleGraph,
+	g :: AbstractGraph,
 	K :: Int,
 	controller_placements :: Vector{Vector{Int}};
 	solver = DEFAULT_OPTIMIZER,
@@ -267,9 +339,13 @@ function naop(
 end
 
 function controller_placement_optimization(
-    g :: SimpleGraph, M :: Int, K :: Int;
-    TOL :: Float64 = 1e-6
-)
+    g :: AbstractGraph, M :: Int, K :: Int;
+    TOL :: Float64 = 1e-6, has_delay = false, bcc = 0.0, bsc = 0.0
+    )
+    if has_delay
+        @assert(bcc != 0.0)
+        @assert(bsc != 0.0)
+    end
 
 	attack_set = Vector{Int}[]
 	Y_star = Float64(nv(g))
@@ -301,13 +377,18 @@ function controller_placement_optimization(
 		end
 
 		# STEP 2: A = A union {a*}. Then solve P[M, A] to get placement s*. Repeat
-		if !(a_star ∈ attack_set)
+		if a_star ∉ attack_set
 			push!(attack_set, a_star)
 		else
-            error("This should not happen");
+            error("Attack [$a_star] is already in the attack set")
 		end
 
-		cpop_model, s_star = cpop(g, M, attack_set)
+        if has_delay
+            cpop_model, s_star = cpop_with_delays(g, M, attack_set, bsc, bcc)
+        else
+		    cpop_model, s_star = cpop(g, M, attack_set)
+        end
+        
 		elapsed = @time_only(optimize!(cpop_model))
 
 		assert_is_solved_and_feasible(cpop_model)
@@ -323,9 +404,13 @@ function controller_placement_optimization(
 end
 
 function attack_optimization(
-    g :: SimpleGraph, M :: Int, K :: Int;
-    TOL :: Float64 = 1e-6
-)
+    g :: AbstractGraph, M :: Int, K :: Int;
+    TOL :: Float64 = 1e-6, has_delay = true, bsc = 0.0, bcc = 0.0
+    )
+    if has_delay
+        @assert(bsc != 0.0)
+        @assert(bcc != 0.0)
+    end
 
 	placement_set = Vector{Int}[]
 	Z_star = 0.0
@@ -344,7 +429,11 @@ function attack_optimization(
 	while true
 		# Solve CPOP for the current best placement
 		attack_set = [a_star]
-		cpop_model, s_star = cpop(g, M, attack_set)
+        if has_delay
+            cpop_model, s_star = cpop_with_delays(g, M, attack_set, bsc, bcc)
+        else
+		    cpop_model, s_star = cpop(g, M, attack_set)
+        end
 
 		elapsed = @time_only(optimize!(cpop_model))
 		push!(cpop_times, elapsed)
@@ -354,16 +443,15 @@ function attack_optimization(
 		s_star = SDNUtils.to_placement(value.(s_star))
 		Y_star = objective_value(cpop_model)
 
-		# println("[$n_iterations] Z_star = $Z_star, Y_star = $Y_star")
 		if Y_star <= Z_star + TOL
 			break
 		end
 
 		# STEP 2: S = S union {s*}. Then solve A[K, S] to get attack a*. Repeat
-		if !(s_star ∈ placement_set)
+		if s_star ∉ placement_set
 			push!(placement_set, s_star)
 		else
-            error("This should not happen")
+            error("placement [$s_star] is already in the placement set.")
 		end
 
 		naop_model, a_star = naop(g, K, placement_set)
@@ -557,6 +645,72 @@ function pricing_attack(
 	m, a
 end
 
+function find_feasible_controller_placement(g :: AbstractGraph, M :: Int)
+    SDNUtils.gen_random_vector(nv(g), M)
+end
+
+"""
+    switch2controller_delay(delay_table :: Matrix{Float64}, s :: Vector{Float64})
+
+Calculate the switch-to-controller given switch `switch`
+"""
+function get_switch2controller_delay(delay_table :: Matrix{Float64}, s :: Vector{Int}, switch :: Int)
+    minimum(delay_table[switch, s])
+end
+
+function get_controller2controler_delay(delay_table :: Matrix{Float64}, s :: Vector{Int}, controller :: Int)
+    @assert(controller in s)
+
+    minimum(delay_table[controller, setdiff(s, controller)])
+end
+
+function switch2controller_delays(delay_table :: Matrix{Float64}, s :: Vector{Int})
+    [get_switch2controller_delay(delay_table, s, i) for i in 1:size(delay_table, 1)]
+end
+
+function controller2controller_delays(delay_table :: Matrix{Float64}, s :: Vector{Int})
+    [get_controller2controler_delay(delay_table, s, i) for i in s]
+end
+
+function find_feasible_controller_placement(g :: SimpleWeightedGraph, M :: Int, bcc :: Float64, bsc :: Float64)
+    m = Model(DEFAULT_OPTIMIZER)
+    set_silent(m)
+
+    delay_table = precalc_delays(g)
+
+    V = nv(g)
+
+    @variable(m, s[1:V], Bin)
+    @constraint(m, sum(s) == M)
+    
+    # Set of nodes that for every v in vertex set,
+    # satisfies the BSC constraint
+    for v in vertices(g)
+        d = delay_table[v, :] .< bsc
+        @constraint(m, sum(d .* s) ≥ 1)
+    end
+
+    # Get all node pairs that violate BCC
+    U = Vector{Tuple{Int, Int}}()
+    for (v, w) in Iterators.product(vertices(g), vertices(g))
+        if delay_table[v, w] > bcc && (w, v) ∉ U
+            push!(U, (v, w))
+            @constraint(m, s[v] + s[w] ≤ 1)
+        end
+    end
+    w = rand(V)                 # in (0,1)
+    @objective(m, Min, sum(w[i]*s[i] for i in 1:V))
+    # @objective(m, Min, 0)
+
+    optimize!(m)
+
+    if termination_status(m) == MOI.OPTIMAL
+        return SDNUtils.to_placement(value.(s))
+    else
+        return nothing
+    end
+end
+
 function mixed_strategy_algorithm(
 	g :: AbstractGraph, 
 	M :: Int, K :: Int;
@@ -572,8 +726,15 @@ function mixed_strategy_algorithm(
     end
 	
 	# Random attack and random placement of size M and K
-	s = SDNUtils.gen_random_vector(nv(g), M)
+    if has_delays
+        s = find_feasible_controller_placement(g, M, bcc, bsc)
+    else
+        s = find_feasible_controller_placement(g, M)
+    end
+    
 	a = SDNUtils.gen_random_vector(nv(g), K)
+
+    @assert(!isnothing(s))
 
 	placements = [s]
 	attacks = [a]
@@ -701,7 +862,7 @@ function outcome_metrics_mixed(g, M::Int, K::Int)
 	return V_star
 end
 
-function outcome_metrics_pure(g, M::Int, K::Int)
+function outcome_metrics_pure(g :: AbstractGraph, M::Int, K::Int)
     V = nv(g)
     @assert 0 ≤ M ≤ V && 0 ≤ K ≤ V
 	_, v_maxmin = controller_placement_optimization(g, M, K)
@@ -710,7 +871,7 @@ function outcome_metrics_pure(g, M::Int, K::Int)
     return v_minmax, v_maxmin
 end
 
-function outcome_table(g, M_max :: Int, K_max :: Int; K_min :: Int = 2, full = false)
+function outcome_table(g :: AbstractGraph, M_max :: Int, K_max :: Int; K_min :: Int = 2, full = false)
 	v_minmax_table = Matrix{Int}(undef, M_max, K_max)
 	v_maxmin_table = Matrix{Int}(undef, M_max, K_max)
 	v_star_table = Matrix{Float64}(undef, M_max, K_max)
@@ -770,4 +931,78 @@ function plot_vstar_and_expected(v_star :: AbstractVector{Float64}, expected :: 
     lines!(ax, 1:n, expected)
 
     f
+end
+
+function general_stats(g :: AbstractGraph, s :: Vector{Int})
+    delays = precalc_delays(g)
+    sc = switch2controller_delays(delays, s)
+    cc = controller_delays(g, s)
+
+    (
+        mean_sc = mean(sc),
+        max_sc = maximum(sc),
+        mean_cc = mean(cc),
+        max_cc = maximum(cc)
+    )
+end
+
+const ExpectedValueNothing = Union{Float64, Symbol}
+
+function safe_mixed_strategy(args...; kwargs...)
+    try
+        mixed_strategy_algorithm(args...; kwargs...).V_star
+    catch
+        :infeasible
+    end
+end
+
+# For simple.g
+# mixed_strategies_stats(simple.g, 270, 350, 450, 250, 3, 3)
+# It's good practice to define the Union type for clarity
+const ExpectedValueNothing = Union{Float64, Symbol}
+
+# Helper for the minmax calculation, mirroring safe_mixed_strategy
+function safe_minmax_sc_delay(g, m, bsc, bcc; TOL=1e-9)
+    try
+        minmax_sc_delay(g, m, bsc, bcc) + TOL
+    catch
+        :infeasible
+    end
+end
+
+function mixed_strategies_stats(
+    g::SimpleWeightedGraph,
+    bcc_low::Float64,
+    bcc_high::Float64,
+    bsc::Float64,
+    m_high::Int,
+    k_high::Int;
+    k_low::Int = 1,
+    m_low::Int = 1,
+    TOL::Float64 = 1e-9,
+)
+
+    return [
+        begin
+            @show k, m
+            # 1. Calculate bsc values safely
+            bsc_low = safe_minmax_sc_delay(g, m, bsc, bcc_low; TOL=TOL)
+            bsc_high = safe_minmax_sc_delay(g, m, bsc, bcc_high; TOL=TOL)
+
+            # 2. Check for infeasibility before calculating the next steps
+            low = (bsc_low == :infeasible) ? :infeasible :
+                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_low, bsc=bsc_low)
+
+            high = (bsc_high == :infeasible) ? :infeasible :
+                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_high, bsc=bsc_high)
+
+            # This one is independent and can be calculated directly
+            no_delay = safe_mixed_strategy(g, m, k; has_delays=false)
+
+            # 3. Assemble the final tuple
+            (bsc_low, low, no_delay, high, bsc_high)
+        end
+        # The comprehension builds the correctly sized matrix directly
+        for m in m_low:m_high, k in k_low:k_high
+    ]
 end
