@@ -18,6 +18,7 @@ using LinearAlgebra
 import .SDNUtils
 
 DEFAULT_OPTIMIZER = CPLEX.Optimizer
+const SEED = 1729
 
 macro time_only(exp)
     quote
@@ -1059,6 +1060,9 @@ function mixed_strategies_stats(
                 no_delay_stats = new_statistic(no_delay, no_delay_time)
             end
 
+            @printf("[Exec Times] low = %.2f, no_delay = %.2f, high = %.2f\n",
+                    low_time, no_delay_time, high_time)
+
             # 3. Assemble the final tuple
             (low_stats, no_delay_stats, high_stats)
             # (bsc_low, low, no_delay, high, bsc_high)
@@ -1349,6 +1353,7 @@ function stats_to_latex_dual(
 end
 
 function simple_9_node_network_stats()
+    Random.seed!(SEED)
     simple = SDNUtils.SdnGraphUtils.simple_network(true)
     row_labels = ("BCC=270, BSC=350", "No Delay", "BCC=450, BSC=250")
 
@@ -1362,11 +1367,11 @@ function simple_9_node_network_stats()
 
     stats_to_latex_dual(stats, "results/simple_graph_entropy.tex", "Entropy (bits) for the 9-node network", :placement_entropy, "Placements", :attack_entropy, "Attacks"; k_start=2, row_labels=row_labels)
 
-
-    simple
+    simple, stats
 end
 
 function cost266_network_stats()
+    Random.seed!(SEED)
     cost266 = SDNUtils.read_sndgraph("graphs/cost266.sndlib"; weighted=true)
     row_labels = ("BCC=1500, BSC=1529.28", "No Delay", "BCC=2000, BCC=2000")
 
@@ -1380,5 +1385,5 @@ function cost266_network_stats()
 
     stats_to_latex_dual(stats, "results/cost266_graph_entropy.tex", "Entropy (bits) for the cost266", :placement_entropy, "Placements", :attack_entropy, "Attacks"; k_start=2, row_labels=row_labels)
 
-    cost266
+    cost266, stats
 end
