@@ -31,7 +31,7 @@ end
 "Returns (value, elapsed seconds)"
 macro time_val(expression)
     quote
-        local _to = time_ns()
+        local _t0 = time_ns()
         local _val = $(esc(expression))
         local _t1 = time_ns()
 
@@ -950,7 +950,7 @@ const ExpectedValueNothing = Union{Float64, Symbol}
 
 function safe_mixed_strategy(args...; kwargs...)
     try
-        mixed_strategy_algorithm(args...; kwargs...).V_star
+        mixed_strategy_algorithm(args...; kwargs...)
     catch
         :infeasible
     end
@@ -959,7 +959,20 @@ end
 # For simple.g
 # mixed_strategies_stats(simple.g, 270, 350, 450, 250, 3, 3)
 # It's good practice to define the Union type for clarity
-const ExpectedValueNothing = Union{Float64, Symbol}
+# const ExpectedValueNothing = Union{Float64, Symbol}
+
+struct MixedStrategyStatistic
+    payoff :: Union{Float64, Symbol}
+    # The number of non-zero placements
+    n_placements :: Int
+    # The number of non-zero attacks
+    n_attacks :: Int
+    # Runtime in seconds
+    exec_time :: Float64
+    placement_entropy :: Float64
+    attack_entropy :: Float64
+    iterations :: Int
+end
 
 # Helper for the minmax calculation, mirroring safe_mixed_strategy
 function safe_minmax_sc_delay(g, m, bsc, bcc; TOL=1e-9)
@@ -968,6 +981,20 @@ function safe_minmax_sc_delay(g, m, bsc, bcc; TOL=1e-9)
     catch
         :infeasible
     end
+end
+
+infeasible_mixed_strategy_statistic(time) = MixedStrategyStatistic(:infeasible, 0, 0, time, 0, 0, 0)
+
+function entropy(arr :: Vector{Float64}; base=2)
+    # @assert(arr .>= 0.0 && arr .<= 1.0)
+
+    filtered = filter(x -> x > 1e-9, arr)
+
+    if length(filtered) == 0
+        return 0.0
+    end
+
+    - sum(filtered .|> p -> p * log(base, p))
 end
 
 function mixed_strategies_stats(
@@ -980,29 +1007,378 @@ function mixed_strategies_stats(
     k_low::Int = 1,
     m_low::Int = 1,
     TOL::Float64 = 1e-9,
-)
+    )
+    
+    n_non_zero(arr) = length(filter(x -> x > 1e-9, arr))
+    n_iterations(stats) = length(stats.stats_v_star)
+    safe_probs = SDNUtils.safe_probs
+
+    new_statistic(stat, time) =
+        MixedStrategyStatistic(
+            stat.V_star,
+            n_non_zero(safe_probs(stat.q_star)),
+            n_non_zero(safe_probs(stat.p_star)),
+            time,
+            entropy(safe_probs(stat.q_star)),
+            entropy(safe_probs(stat.p_star)),
+            n_iterations(stat),
+        )
 
     return [
         begin
+            local low_stats, high_stats, no_delay_stats
             @show k, m
             # 1. Calculate bsc values safely
             bsc_low = safe_minmax_sc_delay(g, m, bsc, bcc_low; TOL=TOL)
             bsc_high = safe_minmax_sc_delay(g, m, bsc, bcc_high; TOL=TOL)
 
             # 2. Check for infeasibility before calculating the next steps
-            low = (bsc_low == :infeasible) ? :infeasible :
-                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_low, bsc=bsc_low)
+            low, low_time = @time_val((bsc_low == :infeasible) ? :infeasible :
+                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_low, bsc=bsc_low))
 
-            high = (bsc_high == :infeasible) ? :infeasible :
-                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_high, bsc=bsc_high)
+            if low == :infeasible
+                low_stats = infeasible_mixed_strategy_statistic(low_time)
+            else
+                low_stats = new_statistic(low, low_time)
+            end
+
+            high, high_time = @time_val((bsc_high == :infeasible) ? :infeasible :
+                safe_mixed_strategy(g, m, k; has_delays=true, bcc=bcc_high, bsc=bsc_high))
+
+            if high == :infeasible
+                high_stats = infeasible_mixed_strategy_statistic(high_time)
+            else
+                high_stats = new_statistic(high, high_time)
+            end
 
             # This one is independent and can be calculated directly
-            no_delay = safe_mixed_strategy(g, m, k; has_delays=false)
+            no_delay, no_delay_time = @time_val(safe_mixed_strategy(g, m, k; has_delays=false))
+            if no_delay == :infeasible
+                no_delay_stats = infeasible_mixed_strategy_statistic(no_delay_time)
+            else
+                no_delay_stats = new_statistic(no_delay, no_delay_time)
+            end
 
             # 3. Assemble the final tuple
-            (bsc_low, low, no_delay, high, bsc_high)
+            (low_stats, no_delay_stats, high_stats)
+            # (bsc_low, low, no_delay, high, bsc_high)
         end
         # The comprehension builds the correctly sized matrix directly
         for m in m_low:m_high, k in k_low:k_high
     ]
+end
+
+
+
+
+"""
+_format_latex_value(stats::MixedStrategyStatistic, column::Symbol, decimal_places::Int)
+
+Internal helper function to format the values from the MixedStrategyStatistic struct.
+Handles :infeasible symbols and formats floats to a fixed decimal place.
+"""
+function _format_latex_value(stats::MixedStrategyStatistic, column::Symbol, decimal_places::Int)
+    val = getfield(stats, column)
+    
+    if val == :infeasible
+        return raw"\textemdash"
+    elseif val isa AbstractFloat
+        return @sprintf "%.*f" decimal_places val
+    elseif val isa Int
+        return string(val)
+    else
+        return string(val)
+    end
+end
+
+"""
+    stats_to_latex(
+        mat :: Matrix{Tuple{MixedStrategyStatistic, MixedStrategyStatistic, MixedStrategyStatistic}}, 
+        filename :: AbstractString, 
+        table_title :: AbstractString, 
+        column :: Symbol; 
+        k_start=1, 
+        m_start=1, 
+        decimal_places=2,
+        k_cols_per_table=3,
+        row_labels = ("(BCC=1500)", "No Delay", "(BCC=2000)")
+    )
+
+Generates a complete, self-contained LaTeX table environment from the mixed strategy 
+statistics matrix and writes it to `filename`.
+
+If the number of K columns exceeds `k_cols_per_table`, it will generate
+multiple `tabular` environments (chunks) within the same `table` environment.
+
+The `column` argument is a `Symbol` specifying which field from the 
+`MixedStrategyStatistic` struct to display (e.g., `:payoff`, `:exec_time`).
+"""
+function stats_to_latex(
+    mat :: Matrix{Tuple{MixedStrategyStatistic, MixedStrategyStatistic, MixedStrategyStatistic}}, 
+    filename :: AbstractString, 
+    table_title :: AbstractString,
+    column :: Symbol; 
+    k_start=1, 
+    m_start=1, 
+    decimal_places=2,
+    k_cols_per_table=3,
+    row_labels = ("Tight Delay (BCC=1500)", "No Delay", "Loose Delay (BCC=2000)")
+)
+    
+    open(filename, "w") do file
+        n_rows, n_cols = size(mat) # n_rows = M count, n_cols = K count
+        
+        # Determine how many table chunks to create
+        num_blocks = ceil(Int, n_cols / k_cols_per_table)
+        
+        # --- Table Preamble ---
+        write(file, raw"% Add \usepackage{booktabs}, \usepackage{multirow}, \usepackage{amsmath} to your LaTeX preamble" * "\n")
+        write(file, raw"\begin{table}[!htbp]" * "\n")
+        write(file, raw"\centering" * "\n")
+        
+        write(file, "\\caption{$(table_title)}\n")
+        label_name = "tab:" * lowercase(replace(table_title, r"[^a-zA-Z0-9\s]" => "", " " => "-"))
+        write(file, "\\label{$(label_name)}\n")
+        
+        write(file, raw"\small" * "\n\n")
+
+        for block_idx in 1:num_blocks
+            k_start_idx = (block_idx - 1) * k_cols_per_table + 1
+            k_end_idx = min(block_idx * k_cols_per_table, n_cols)
+            current_k_indices = k_start_idx:k_end_idx
+            num_current_cols = length(current_k_indices)
+
+            col_specifiers = repeat("c", num_current_cols)
+            col_format = "@{} l c $(col_specifiers) @{}"
+            write(file, "\\begin{tabular}{$(col_format)}\n")
+            write(file, raw"\toprule" * "\n")
+
+            write(file, "\\textbf{Delay Setting} & \\textbf{M} & \\multicolumn{$(num_current_cols)}{c}{\\textbf{K (Attacks)}} \\\\\n")
+            
+            write(file, " & & ") # Skip first two columns
+            k_headers = ["\\textbf{$(k_start + k_idx - 1)}" for k_idx in current_k_indices]
+            write(file, join(k_headers, " & ") * " \\\\\n")
+            
+            write(file, "\\cmidrule(l){3-$(2 + num_current_cols)}\n")
+
+            for m_idx in 1:n_rows
+                current_m = m_start + m_idx - 1
+                
+                # --- Sub-row 1: (low_stats) ---
+                write(file, "$(row_labels[1]) & \\multirow{3}{*}{$(current_m)} & ")
+                data_row_1 = [
+                    _format_latex_value(mat[m_idx, k_idx][1], column, decimal_places) 
+                    for k_idx in current_k_indices
+                ]
+                write(file, join(data_row_1, " & ") * " \\\\\n")
+
+                # --- Sub-row 2: (no_delay_stats) ---
+                write(file, "$(row_labels[2]) & & ") # M-column is blank
+                data_row_2 = [
+                    _format_latex_value(mat[m_idx, k_idx][2], column, decimal_places) 
+                    for k_idx in current_k_indices
+                ]
+                write(file, join(data_row_2, " & ") * " \\\\\n")
+
+                # --- Sub-row 3: (high_stats) ---
+                write(file, "$(row_labels[3]) & & ") # M-column is blank
+                data_row_3 = [
+                    _format_latex_value(mat[m_idx, k_idx][3], column, decimal_places) 
+                    for k_idx in current_k_indices
+                ]
+                write(file, join(data_row_3, " & ") * " \\\\\n")
+
+                # --- Separator ---
+                if m_idx < n_rows
+                    write(file, raw"\midrule" * "\n")
+                end
+            end
+
+            # --- Table Footer for this chunk ---
+            write(file, raw"\bottomrule" * "\n")
+            write(file, raw"\end{tabular}" * "\n")
+
+            # Add space if there is another chunk
+            if block_idx < num_blocks
+                write(file, raw"\vspace{1em}" * "\n\n") # 1em vertical space
+            end
+        end
+
+        # --- Close the main table environment ---
+        write(file, raw"\end{table}" * "\n")
+    end # close file
+    
+    println("Successfully generated full LaTeX table at $(filename)")
+end
+
+
+"""
+    stats_to_latex_dual(
+        mat :: Matrix{Tuple{MixedStrategyStatistic, MixedStrategyStatistic, MixedStrategyStatistic}}, 
+        filename :: AbstractString, 
+        table_title :: AbstractString, 
+        column1 :: Symbol, 
+        col1_label :: String,
+        column2 :: Symbol,
+        col2_label :: String;
+        k_start=1, 
+        m_start=1, 
+        decimal_places=2,
+        k_cols_per_table=3,
+        row_labels = ("(BCC=1500)", "No Delay", "(BCC=2000)")
+    )
+
+Generates a complete, self-contained LaTeX table environment for dual (side-by-side)
+metrics and writes it to `filename`.
+
+If the number of K columns exceeds `k_cols_per_table`, it will generate
+multiple `tabular` environments (chunks) within the same `table` environment.
+"""
+function stats_to_latex_dual(
+    mat :: Matrix{Tuple{MixedStrategyStatistic, MixedStrategyStatistic, MixedStrategyStatistic}}, 
+    filename :: AbstractString, 
+    table_title :: AbstractString,
+    column1 :: Symbol, 
+    col1_label :: String,
+    column2 :: Symbol,
+    col2_label :: String;
+    k_start=1, 
+    m_start=1, 
+    decimal_places=2,
+    k_cols_per_table=3,
+    row_labels = ("Tight Delay (BCC=1500)", "No Delay", "Loose Delay (BCC=2000)")
+)
+    
+    open(filename, "w") do file
+        n_rows, n_cols = size(mat) # n_rows = M count, n_cols = K count
+
+        num_blocks = ceil(Int, n_cols / k_cols_per_table)
+        
+        write(file, raw"% Add \usepackage{booktabs}, \usepackage{multirow}, \usepackage{amsmath} to your LaTeX preamble" * "\n")
+        write(file, raw"\begin{table}[!htbp]" * "\n")
+        write(file, raw"\centering" * "\n")
+        
+        write(file, "\\caption{$(table_title)}\n")
+        label_name = "tab:" * lowercase(replace(table_title, r"[^a-zA-Z0-9\s]" => "", " " => "-"))
+        write(file, "\\label{$(label_name)}\n")
+        
+        write(file, raw"\small" * "\n\n")
+
+        # --- Main loop to create table chunks ---
+        for block_idx in 1:num_blocks
+            # Calculate the K column indices for this chunk
+            k_start_idx = (block_idx - 1) * k_cols_per_table + 1
+            k_end_idx = min(block_idx * k_cols_per_table, n_cols)
+            current_k_indices = k_start_idx:k_end_idx
+            num_current_cols = length(current_k_indices)
+
+            col_specifiers = repeat("c", num_current_cols * 2) 
+            col_format = "@{} l c $(col_specifiers) @{}"
+            write(file, "\\begin{tabular}{$(col_format)}\n")
+            write(file, raw"\toprule" * "\n")
+
+            # --- Column Headers ---
+            # Row 1: Delay Setting | M | K = 2 | K = 3 | K = 4 ...
+            write(file, "\\textbf{Delay Setting} & \\textbf{M} & ")
+            k_headers = [
+                "\\multicolumn{2}{c}{\\textbf{K = $(k_start + k_idx - 1)}}" 
+                for k_idx in current_k_indices
+            ]
+            write(file, join(k_headers, " & ") * " \\\\\n")
+            
+            write(file, " & & ") # Skip first two columns
+            sub_headers = repeat(["\\textbf{$(col1_label)}", "\\textbf{$(col2_label)}"], num_current_cols)
+            write(file, join(sub_headers, " & ") * " \\\\\n")
+            
+            rules = []
+            for i in 1:num_current_cols
+                start_col = 3 + (i - 1) * 2
+                end_col = start_col + 1
+                push!(rules, "\\cmidrule(lr){$(start_col)-$(end_col)}")
+            end
+            write(file, join(rules, " ") * "\n")
+
+
+            for m_idx in 1:n_rows
+                current_m = m_start + m_idx - 1
+                
+                write(file, "$(row_labels[1]) & \\multirow{3}{*}{$(current_m)} & ")
+                data_row_1 = []
+                for k_idx in current_k_indices
+                    stats = mat[m_idx, k_idx][1] # low_stats
+                    push!(data_row_1, _format_latex_value(stats, column1, decimal_places))
+                    push!(data_row_1, _format_latex_value(stats, column2, decimal_places))
+                end
+                write(file, join(data_row_1, " & ") * " \\\\\n")
+
+                write(file, "$(row_labels[2]) & & ") # M-column is blank
+                data_row_2 = []
+                for k_idx in current_k_indices
+                    stats = mat[m_idx, k_idx][2] # no_delay_stats
+                    push!(data_row_2, _format_latex_value(stats, column1, decimal_places))
+                    push!(data_row_2, _format_latex_value(stats, column2, decimal_places))
+                end
+                write(file, join(data_row_2, " & ") * " \\\\\n")
+
+                write(file, "$(row_labels[3]) & & ") # M-column is blank
+                data_row_3 = []
+                for k_idx in current_k_indices
+                    stats = mat[m_idx, k_idx][3] # high_stats
+                    push!(data_row_3, _format_latex_value(stats, column1, decimal_places))
+                    push!(data_row_3, _format_latex_value(stats, column2, decimal_places))
+                end
+                write(file, join(data_row_3, " & ") * " \\\\\n")
+
+                if m_idx < n_rows
+                    write(file, raw"\midrule" * "\n")
+                end
+            end
+
+            write(file, raw"\bottomrule" * "\n")
+            write(file, raw"\end{tabular}" * "\n")
+
+            if block_idx < num_blocks
+                write(file, raw"\vspace{1em}" * "\n\n") # 1em vertical space
+            end
+        end
+
+        write(file, raw"\end{table}" * "\n")
+    end # close file
+    
+    println("Successfully generated full dual-column LaTeX table at $(filename)")
+end
+
+function simple_9_node_network_stats()
+    simple = SDNUtils.SdnGraphUtils.simple_network(true)
+    row_labels = ("BCC=270, BSC=350", "No Delay", "BCC=450, BSC=250")
+
+    stats = mixed_strategies_stats(simple.g, 270.0, 450.0, 2000.0, 5, 4; k_low=2)
+
+    stats_to_latex(stats, "results/simple_graph_payoff.tex", "Payoffs V* for the Simple 9-node network", :payoff; k_start=2, row_labels = row_labels)
+
+    stats_to_latex_dual(stats, "results/simple_graph_placements.tex", "Number of non-zero probability controller placements and attack placements for the Simple 9-node network", :n_placements, "Placements", :n_attacks, "Attacks"; k_start=2, row_labels=row_labels)
+
+    stats_to_latex_dual(stats, "results/simple_graph_exec_time.tex", "Execution time of the column-generation process for the 9-node network", :exec_time, "seconds", :iterations, "iterations"; k_start=2, row_labels=row_labels)
+
+    stats_to_latex_dual(stats, "results/simple_graph_entropy.tex", "Entropy (bits) for the 9-node network", :placement_entropy, "Placements", :attack_entropy, "Attacks"; k_start=2, row_labels=row_labels)
+
+
+    simple
+end
+
+function cost266_network_stats()
+    cost266 = SDNUtils.read_sndgraph("graphs/cost266.sndlib"; weighted=true)
+    row_labels = ("BCC=1500, BSC=1529.28", "No Delay", "BCC=2000, BCC=2000")
+
+    stats = mixed_strategies_stats(cost266.g, 1500.0, 2000.0, 2000.0, 15, 6; k_low=2)
+
+    stats_to_latex(stats, "results/cost266_graph_payoff.tex", "Payoffs V* for the cost266", :payoff; k_start=2, row_labels = row_labels)
+
+    stats_to_latex_dual(stats, "results/cost266_graph_placements.tex", "Number of non-zero probability controller placements and attack placements for the cost266", :n_placements, "Placements", :n_attacks, "Attacks"; k_start=2, row_labels=row_labels)
+
+    stats_to_latex_dual(stats, "results/cost266_graph_exec_time.tex", "Execution time of the column-generation process for the cost266", :exec_time, "seconds", :iterations, "iterations"; k_start=2, row_labels=row_labels)
+
+    stats_to_latex_dual(stats, "results/cost266_graph_entropy.tex", "Entropy (bits) for the cost266", :placement_entropy, "Placements", :attack_entropy, "Attacks"; k_start=2, row_labels=row_labels)
+
+    cost266
 end
