@@ -46,6 +46,14 @@ class Network:
         connected_components = map(lambda s: induce(sorted(list(s))), nx.connected_components(H))
         return list(connected_components)
 
+    def remaining_nodes(self, attack_ids):
+        connected_components = self.attack(attack_ids)
+        survives = set()
+        for c in connected_components:
+            survives.update(c)
+        return sorted(list(survives))
+        
+
     def surviving_nodes(self, controller_ids, attack_ids, backup_controllers=None):
         connected_components = self.attack(attack_ids)
         survives = []
