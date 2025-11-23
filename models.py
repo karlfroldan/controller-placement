@@ -255,14 +255,14 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
         # Pair of nodes that exceed the BSC delay from each other
         U = {
             (v, w) for v, w in product(vertex_list, vertex_list)
-            if v < w and self.network.delays[v - 1, w - 1] > self.bcc
+            if v < w and self.network.delays[v, w] > self.bcc
         }
 
         # Nodes w that are reachable from v within BSC delay
         W_V = {}
         for v in vertex_list:
             within_delay_list = {
-                w for w in vertex_list if self.network.delays[v - 1, w - 1] <= self.bsc
+                w for w in vertex_list if self.network.delays[v, w] <= self.bsc
             }
             W_V[v] = within_delay_list
 

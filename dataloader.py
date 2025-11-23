@@ -75,7 +75,7 @@ class Network:
             # The first index of the tuple are the distances to go from one node to another.
             path_lengths = nx.single_source_dijkstra(self.g, v, weight='weight')[0]
             for w, dist in path_lengths.items():
-                self.delays[v - 1, w - 1] = dist
+                self.delays[v, w] = dist
 
     def load_from_file(self, filename):
         parsed_data = {
@@ -134,10 +134,10 @@ class Network:
             raise Exception('Malformed Data File')
 
         for n in parsed_data['nodes']:
-            self.g.add_node(n['id'], loc_x=n['x'], loc_y=n['y'], label=n['label'])
+            self.g.add_node(n['id'] - 1, loc_x=n['x'], loc_y=n['y'], label=n['label'])
         
         for e in parsed_data['edges']:
-            self.g.add_edge(e['src'], e['dst'], weight=e['w'])
+            self.g.add_edge(e['src'] - 1, e['dst'], weight=e['w'])
         
 if __name__ == '__main__':
     n = Network('networks/dognet.dat')

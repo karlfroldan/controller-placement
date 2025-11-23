@@ -16,11 +16,11 @@ def make_ones(m, n):
     return arr
 
 def one_indices(xs):
-    add1 = lambda x: x + 1
+    # add1 = lambda x: x + 1
 
     if isinstance(xs, list):
         xs = np.array(xs)
-    return list(map(add1, np.where(xs == 1)[0].tolist()))
+    return np.where(xs == 1)[0].tolist()
 
 class InitialGeneration:
     """
