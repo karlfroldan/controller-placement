@@ -1,3 +1,4 @@
+from itertools import product
 from amplpy import AMPL
 
 def values_to_list(vs):
@@ -12,6 +13,13 @@ class MathematicalModel:
 
         assert(model_file)
         self.ampl = AMPL()
+        # self.ampl.setOption('cplex_options', 'mipdisplay=0 lpmethod=0 barrier display=0 simplex display=0')
+        # self.ampl.setOption('solver_msg', 0)
+
+        # self.ampl.setOption('solver_msg', 0)
+        # self.ampl.setOption('show_presolve_messages', 0)
+        # self.ampl.setOption('cplex_options', 'mipdisplay=0 outlev=0 version=0')
+
         self._solved = False
         self._model_file = model_file
         self._model_loaded = False
@@ -64,9 +72,13 @@ class MixedStrategyMasterProblem(MathematicalModel):
         qs = values_to_list(qs)
 
         # payoff
-        v_star = self.ampl.get_variable('y').value()
+        y = self.ampl.get_variable('y').value()
+
+        x_constraint = self.ampl.get_constraint('EnsureProbabilityDistribution')
+        x = x_constraint.dual()
         return {
-            'V*': v_star,
+            'y': y,
+            'x': x,
             'q': qs,
             'p': ps,
         }
@@ -159,13 +171,9 @@ class ControllerPlacementPricingProblem(MathematicalModel):
             self.solve()
         var_s = self.ampl.get_variables()['s']
         s_star = values_to_list(var_s)
-        # Y_star = values_to_list(self.ampl.get_variables()['Y'])
-
-        V_star = self.ampl.get_objectives()['OperatorPayoff'].value()
-        print(V_star)
         return {
             's*': s_star,
-            'V*': V_star,
+            # 'V*': V_star,
         }
 
     def load_data(self):
@@ -193,7 +201,83 @@ class ControllerPlacementPricingProblem(MathematicalModel):
             for i, c in enumerate(components):
                 C_A[(a, i)] = list(c)
 
-        print(component_ids)
+        self.ampl.set['COMPONENT_IDS'] = component_ids
+        self.ampl.set['C_A'] = C_A
+
+        self.ampl.param['M'] = self.M
+        self.ampl.param['p_star'] = self.p_star
+
+
+class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
+    def __init__(self, network, attacks, p_star, M, bsc, bcc, eps=1e-9):
+        self._model_file = 'models/controller_placement_pricing_problem_with_delay.mod'
+        super(ControllerPlacementPricingProblemWithDelay, self).__init__(self._model_file)
+
+        self._name = 'ControllerPlacementPricingProblem with Delay'
+        self.network = network
+        self.attacks = attacks
+        self.p_star = p_star
+        self.M = M
+        self.eps = eps
+        # Bound on the BSC delay
+        self.bsc = bsc
+        # Bound on the BCC delay
+        self.bcc = bcc
+
+    def report(self):
+        if not self._solved:
+            self.solve()
+        var_s = self.ampl.get_variables()['s']
+        s_star = values_to_list(var_s)
+        # Y_star = values_to_list(self.ampl.get_variables()['Y'])
+
+        V_star = self.ampl.get_objectives()['OperatorPayoff'].value()
+        return {
+            's*': s_star,
+        }
+
+    def load_data(self):
+        self._load_model()
+        vertex_list = list(self.network.nodes)
+
+        # Key => attack set pair
+        attack_dict = to_set_ids(self.attacks)
+
+        self.ampl.set['VERTICES'] = vertex_list
+        self.ampl.set['ATTACKS'] = attack_dict.keys()
+
+        V_A = {}
+        for i, a in attack_dict.items():
+            # vs = self.network.remaining_nodes(a)
+            V_A[i] = a
+        self.ampl.set['V_A'] = V_A
+
+        # Pair of nodes that exceed the BSC delay from each other
+        U = {
+            (v, w) for v, w in product(vertex_list, vertex_list)
+            if v < w and self.network.delays[v - 1, w - 1] > self.bcc
+        }
+
+        # Nodes w that are reachable from v within BSC delay
+        W_V = {}
+        for v in vertex_list:
+            within_delay_list = {
+                w for w in vertex_list if self.network.delays[v - 1, w - 1] <= self.bsc
+            }
+            W_V[v] = within_delay_list
+
+        self.ampl.set['U'] = U
+        self.ampl.set['W_V'] = W_V
+        
+        # Components after the attack. c in C(a) contains the list of vertices in each component
+        component_ids = {}
+        C_A = {}
+        for a, attack in attack_dict.items():
+            components = self.network.attack(attack)
+            component_ids[a] = list(range(len(components)))
+            for i, c in enumerate(components):
+                C_A[(a, i)] = list(c)
+
         self.ampl.set['COMPONENT_IDS'] = component_ids
         self.ampl.set['C_A'] = C_A
 
