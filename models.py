@@ -24,16 +24,23 @@ class MathematicalModel:
         self._model_file = model_file
         self._model_loaded = False
 
+        self._load_model()
+
+    def _reset(self):
+        self.ampl.eval('reset data;')
+
     def _load_model(self, model_file = None):
         if not self._model_loaded:
             f = model_file if model_file else self._model_file
             self.ampl.read(f)
             self._model_loaded = True
+
+    def load_data(self):
+        self._reset()
     
     def solve(self, solver='cplex', model_file = None):
-        self._load_model(model_file)
-        # self.ampl.read(self._model_file)
-        self.load_data()
+        assert(self._model_loaded)
+
         self.ampl.option['solver'] = solver
         self.ampl.solve()
         self._solved = True
@@ -48,16 +55,12 @@ class MathematicalModel:
             return 'Unnamed Model {vars_map.size()} variables and {cons_map.size()} constraints'
 
 class MixedStrategyMasterProblem(MathematicalModel):
-    def __init__(self, network, placements, attacks):
+    def __init__(self, network):
         self._model_file = 'models/master_problem_mixed_strategies_main.mod';
 
         super(MixedStrategyMasterProblem, self).__init__(self._model_file)
         self._name = 'MixedStrategyMasterProblem'
-
         self.network = network
-        self.placements = placements
-        self.attacks = attacks
-        
 
     def report(self):
         if not self._solved:
@@ -83,11 +86,11 @@ class MixedStrategyMasterProblem(MathematicalModel):
             'p': ps,
         }
 
-    def load_data(self):
-        self._load_model()
+    def load_data(self, placements, attacks):
+        super(MixedStrategyMasterProblem, self).load_data()
         # Convert them to IDs so we can pass them as sets.
-        placement_mapping = to_set_ids(self.placements)
-        attack_mapping = to_set_ids(self.attacks)
+        placement_mapping = to_set_ids(placements)
+        attack_mapping = to_set_ids(attacks)
 
         self.ampl.set['S'] = sorted(placement_mapping.keys())
         self.ampl.set['A'] = sorted(attack_mapping.keys())
@@ -104,24 +107,26 @@ class MixedStrategyMasterProblem(MathematicalModel):
         self.ampl.param['V'] = v_data
 
 class AttackGenerationPricingProblem(MathematicalModel):
-    def __init__(self, network, placements, q_star, K, eps = 1e-9):
+    def __init__(self, network, K, eps = 1e-9):
         self._model_file = 'models/attack_generation_pricing_problem.mod'
         super(AttackGenerationPricingProblem, self).__init__(self._model_file)
         self.network = network
 
         self._name = 'AttackGenerationPricingProblem'
 
+        self.eps = eps
+        self.K = K
+
+    def non_zero_placements(self, placements, q_star):
         new_placements = []
         new_q_star = []
 
         # Do not consider placements that have 0 probability.
         for p, q in zip(placements, q_star):
-            if q >= eps:
+            if q >= self.eps:
                 new_placements.append(p)
                 new_q_star.append(q)
-        self.placements = new_placements
-        self.q_star = new_q_star
-        self.K = K
+        return new_placements, new_q_star
 
     def report(self):
         if not self._solved:
@@ -134,10 +139,11 @@ class AttackGenerationPricingProblem(MathematicalModel):
         }
         
 
-    def load_data(self):
-        self._load_model()
+    def load_data(self, placements, q_star):
+        super(AttackGenerationPricingProblem, self).load_data()
+        placements, q_star = self.non_zero_placements(placements, q_star)
         # Convert them to IDs
-        s_prime = self.placements
+        s_prime = placements
         # s_prime = [i for i in range(len(self.placements))]
         placement_mapping = to_set_ids(s_prime)
         vertex_set = list(self.network.nodes)
@@ -152,17 +158,15 @@ class AttackGenerationPricingProblem(MathematicalModel):
         self.ampl.set['V_S'] = v_s
 
         self.ampl.param['K'] = self.K
-        self.ampl.param['q_star'] = self.q_star
+        self.ampl.param['q_star'] = q_star
 
 class ControllerPlacementPricingProblem(MathematicalModel):
-    def __init__(self, network, attacks, p_star, M, eps=1e-9):
+    def __init__(self, network, M, eps=1e-9):
         self._model_file = 'models/controller_placement_pricing_problem.mod'
         super(ControllerPlacementPricingProblem, self).__init__(self._model_file)
 
         self._name = 'ControllerPlacementPricingProblem'
         self.network = network
-        self.attacks = attacks
-        self.p_star = p_star
         self.M = M
         self.eps = eps
 
@@ -176,12 +180,12 @@ class ControllerPlacementPricingProblem(MathematicalModel):
             # 'V*': V_star,
         }
 
-    def load_data(self):
-        self._load_model()
+    def load_data(self, attacks, p_star):
+        super(ControllerPlacementPricingProblem, self).load_data()
         vertex_list = list(self.network.nodes)
 
         # Key => attack set pair
-        attack_dict = to_set_ids(self.attacks)
+        attack_dict = to_set_ids(attacks)
 
         self.ampl.set['VERTICES'] = vertex_list
         self.ampl.set['ATTACKS'] = attack_dict.keys()
@@ -205,18 +209,16 @@ class ControllerPlacementPricingProblem(MathematicalModel):
         self.ampl.set['C_A'] = C_A
 
         self.ampl.param['M'] = self.M
-        self.ampl.param['p_star'] = self.p_star
+        self.ampl.param['p_star'] = p_star
 
 
 class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
-    def __init__(self, network, attacks, p_star, M, bsc, bcc, eps=1e-9):
+    def __init__(self, network, M, bsc, bcc, eps=1e-9):
         self._model_file = 'models/controller_placement_pricing_problem_with_delay.mod'
         super(ControllerPlacementPricingProblemWithDelay, self).__init__(self._model_file)
 
         self._name = 'ControllerPlacementPricingProblem with Delay'
         self.network = network
-        self.attacks = attacks
-        self.p_star = p_star
         self.M = M
         self.eps = eps
         # Bound on the BSC delay
@@ -236,12 +238,12 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
             's*': s_star,
         }
 
-    def load_data(self):
-        self._load_model()
+    def load_data(self, attacks, p_star):
+        super(ControllerPlacementPricingProblemWithDelay, self).load_data()
         vertex_list = list(self.network.nodes)
 
         # Key => attack set pair
-        attack_dict = to_set_ids(self.attacks)
+        attack_dict = to_set_ids(attacks)
 
         self.ampl.set['VERTICES'] = vertex_list
         self.ampl.set['ATTACKS'] = attack_dict.keys()
@@ -282,4 +284,4 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
         self.ampl.set['C_A'] = C_A
 
         self.ampl.param['M'] = self.M
-        self.ampl.param['p_star'] = self.p_star
+        self.ampl.param['p_star'] = p_star

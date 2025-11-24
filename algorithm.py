@@ -51,8 +51,10 @@ class ControllerPlacementOptimization:
 
         self.initializer_model = InitialGeneration(network, M, K)
 
-        self.attack_gen_model = AttackGenerationPricingProblem
-        self.controller_gen_model = ControllerPlacementPricingProblem
+        self.attack_gen_model = AttackGenerationPricingProblem(network, K)
+        self.controller_gen_model = ControllerPlacementPricingProblem(network, M)
+
+        self.master_model = MixedStrategyMasterProblem(network)
 
         self.eps = eps
 
@@ -79,9 +81,10 @@ class ControllerPlacementOptimization:
 
 
     def _solve_master_problem(self, placements, attacks):
-        mp = MixedStrategyMasterProblem(self.network, placements, attacks)
-        mp.solve()
-        mp_values = mp.report()
+        # mp = MixedStrategyMasterProblem(self.network, placements, attacks)
+        self.master_model.load_data(placements, attacks)
+        self.master_model.solve()
+        mp_values = self.master_model.report()
 
         p_star = mp_values['p']
         q_star = mp_values['q']
@@ -97,18 +100,22 @@ class ControllerPlacementOptimization:
         }
 
     def _make_controller_pricing_problem(self, attacks, p_star):
-        return self.controller_gen_model(self.network, attacks, p_star, self.M)
+        self.controller_gen_model.load_data(attacks, p_star)
+        self.controller_gen_model.solve()
+        return self.controller_gen_model.report()
         
     def _make_attack_generation_pricing_problem(self, placements, q_star):
-        return self.attack_gen_model(self.network, placements, q_star, self.K)
+        self.attack_gen_model.load_data(placements, q_star)
+        self.attack_gen_model.solve()
+        
+        return self.attack_gen_model.report()
 
     def _one_round(self, placements, attacks, p_star, q_star, x_star, y_star):
         updated_placement = False
         # Solve the placement generation problem CP[ATTACKS, p*] to get placement
         # s'.
         pp = self._make_controller_pricing_problem(attacks, p_star)
-        pp_values = pp.report()
-        s_star = one_indices(pp_values['s*'])
+        s_star = one_indices(pp['s*'])
 
         lhs = sum([
             len(self.network.surviving_nodes(s_star, a)) * p_a
@@ -128,8 +135,7 @@ class ControllerPlacementOptimization:
 
         # Solve the attack generation problem
         agp = self._make_attack_generation_pricing_problem(placements, q_star)
-        agp_values = agp.report()
-        a_star = one_indices(agp_values['a*'])
+        a_star = one_indices(agp['a*'])
 
         rhs = sum([
             len(self.network.surviving_nodes(s, a_star)) * q_a
@@ -164,10 +170,12 @@ class ControllerOptimizationWithDelay(ControllerPlacementOptimization):
         return self.controller_gen_model(self.network, attacks, p_star, self.M, self.bsc, self.bcc)
 
 if __name__ == '__main__':
-    n = Network('dognet')
+    n = Network('cost266')
     eps = 1e-9
-    opt = ControllerOptimizationWithDelay(n, 2, 2, 3, 3)
+    opt = ControllerPlacementOptimization(n, 1, 6)
     vals = opt.run()
+    print(f'payoff = {vals['V*']}')
+    
     print(f'Placements')
     for s, q in zip(vals['placements'], vals['q*']):
         if q >= eps:
@@ -176,5 +184,4 @@ if __name__ == '__main__':
     for a, p in zip(vals['attacks'], vals['p*']):
         if p >= eps:
             print(f'{a} - {p:.2f}')
-    # print(opt.run())
     
