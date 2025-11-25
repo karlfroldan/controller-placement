@@ -141,9 +141,5 @@ class Network:
         
 if __name__ == '__main__':
     n = Network('networks/dognet.dat')
-    # print(n.attack(5))
-
-    # for c in n.attack(5):
-    #     print(list(c))
     ax = n.surviving_nodes([1, 5], [5])
     print(ax)

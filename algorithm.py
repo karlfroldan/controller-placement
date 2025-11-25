@@ -1,6 +1,7 @@
+import time
 import numpy as np
 
-from dataloader import Network
+from network import Network
 
 from models import *
 
@@ -162,26 +163,151 @@ class ControllerPlacementOptimization:
 class ControllerOptimizationWithDelay(ControllerPlacementOptimization):
     def __init__(self, network, M, K, bsc, bcc):
         super(ControllerOptimizationWithDelay, self).__init__(network, M, K)
-        self.controller_gen_model = ControllerPlacementPricingProblemWithDelay
+        self.controller_gen_model = ControllerPlacementPricingProblemWithDelay(network, M, bsc, bcc)
         self.bsc = bsc
         self.bcc = bcc
 
-    def _make_controller_pricing_problem(self, attacks, p_star):
-        return self.controller_gen_model(self.network, attacks, p_star, self.M, self.bsc, self.bcc)
+class PureControllerPlacementGeneration:
+    def __init__(self, network, M, K):
+        self.M = M
+        self.K = K
+        self.naop = NAOP(network)
+        self.cpop = CPOP(network)
+        self.V = len(list(network.nodes))
+
+    def run(self, attacks = []):
+        # Generate a random M-node controller placement s*
+        s_star = one_indices(make_ones(self.V, self.M))
+        Y_star = self.V
+        Z_star = 0
+
+        n_iterations = 0
+
+        total_cpop_time = 0
+        total_naop_time = 0
+
+        while True:
+            self.naop.load_data([s_star], self.K)
+
+            begin_time = time.time()
+            self.naop.solve()
+            end_time = time.time()
+
+            total_cpop_time += end_time - begin_time
+            
+            r = self.naop.report()
+            a_star = one_indices(r['a'])
+            Z_star = r['Z']
+
+            if Z_star >= Y_star:
+                break
+
+            attacks.append(a_star)
+
+            # Solve CPOP to get best placement s*
+            self.cpop.load_data(attacks, self.M)
+
+            begin_time = time.time()
+            self.cpop.solve()
+            end_time = time.time()
+
+            total_naop_time = end_time - begin_time
+
+            r = self.cpop.report()
+            s_star = one_indices(r['s'])
+            Y_star = r['Y']
+
+            # Y* is equal to
+            # V(s*, a(s*)) = max_{s in S(M)} min(a in A) V(s, a)
+            n_iterations += 1
+            
+        print(f'Done in {n_iterations} iterations')
+        print(f'Surviving Nodes: {Y_star}')
+        return {
+            'attacks': attacks,
+            's*': s_star,
+            'Y*': Y_star,
+
+            'total_cpop_time': total_cpop_time,
+            'total_naop_time': total_naop_time,
+        }
+
+class PureAttackGeneration:
+    def __init__(self, network, M, K):
+        self.M = M
+        self.K = K
+        self.naop = NAOP(network)
+        self.cpop = CPOP(network)
+        self.V = len(list(network.nodes))
+
+    def run(self, placements = []):
+        a_star = one_indices(make_ones(self.V, self.K))
+        Z_star = 0
+        Y_star = self.V
+
+        n_iterations = 0
+
+        while True:
+            self.cpop.load_data([a_star], self.M)
+            self.cpop.solve()
+            r = self.cpop.report()
+            s_star = one_indices(r['s'])
+            Y_star = r['Y']
+
+            if Y_star <= Z_star:
+                break
+            placements.append(s_star)
+            
+            self.naop.load_data(placements, self.K)
+            self.naop.solve()
+            r = self.naop.report()
+            a_star = one_indices(r['a'])
+            Z_star = r['Z']
+            n_iterations += 1
+            
+        print(f'Done in {n_iterations} iterations')
+        print(f'Surviving Nodes: {Z_star}')
+        return {
+            'placements': placements,
+            'a*': a_star,
+            'Z*': Z_star,
+        }
 
 if __name__ == '__main__':
     n = Network('cost266')
     eps = 1e-9
-    opt = ControllerPlacementOptimization(n, 1, 6)
-    vals = opt.run()
-    print(f'payoff = {vals['V*']}')
+    M = 6
+    K = 4
+
+    p = ControllerOptimizationWithDelay(n, M, K, 1529.28, 1500)
+    r = p.run()
+    print(r)
+
+    # problem = PureControllerPlacementGeneration(n, 6, 4)
+    # r = problem.run()
+    # attacks = r['attacks']
+    # Y_star = r['Y*']
+    # print(f'n attacks: {len(attacks)}, Y*: {Y_star}\n\n')
+
+    # cpop_time = r['total_cpop_time']
+    # naop_time = r['total_naop_time']
+    # print(f'P[{M}, A] = {cpop_time}, A[{K}, s*] = {naop_time}')
+    # s_star = r['s*']
+    # problem = PureAttackGeneration(n, 6, 4)
+    # r = problem.run([s_star])
+    # placements = r['placements']
+    # Z_star = r['Z*']
+    # print(f'n placements: {len(placements)}, Z*: {Z_star}')
+    # opt = ControllerPlacementOptimization(n, 1, 6)
+    # vals = opt.run()
+    # print(f'payoff = {vals['V*']}')
     
-    print(f'Placements')
-    for s, q in zip(vals['placements'], vals['q*']):
-        if q >= eps:
-            print(f'{s} - {q:.2f}')
-    print('Attacks')
-    for a, p in zip(vals['attacks'], vals['p*']):
-        if p >= eps:
-            print(f'{a} - {p:.2f}')
+    # print(f'Placements')
+    # for s, q in zip(vals['placements'], vals['q*']):
+    #     if q >= eps:
+    #         print(f'{s} - {q:.2f}')
+    # print('Attacks')
+    # for a, p in zip(vals['attacks'], vals['p*']):
+    #     if p >= eps:
+    #         print(f'{a} - {p:.2f}')
     

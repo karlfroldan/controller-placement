@@ -1,4 +1,3 @@
-
 # Set of attacks
 set ATTACKS;
 set VERTICES;

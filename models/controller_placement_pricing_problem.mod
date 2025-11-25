@@ -1,12 +1,9 @@
-
 # vertices in the graph
 set VERTICES;
 # attacks. These are simply indices
 set ATTACKS;
 # Nodes affected by the attack
 set V_A {ATTACKS} within VERTICES;
-# vertices exceeding BCC {{v, w} in V^|2| : d(v, w) > BCC}
-set U within {VERTICES, VERTICES};
 # C(a) is the set of components resulting from an attack a
 ## Component Ids hold the indices of components resulting from attack a
 set COMPONENT_IDS {ATTACKS};
