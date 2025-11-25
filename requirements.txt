@@ -1,0 +1,4 @@
+amplpy==0.15.2
+networkx==3.6
+numpy==2.3.5
+python-dotenv==1.2.1
