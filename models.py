@@ -80,7 +80,7 @@ class MathematicalModel:
 
 class MixedStrategyMasterProblem(MathematicalModel):
     def __init__(self, network):
-        self._model_file = 'models/master_problem_mixed_strategies_main.mod';
+        self._model_file = 'models/mixed_strategy_master_problem.mod';
 
         super(MixedStrategyMasterProblem, self).__init__(self._model_file)
         self._name = 'MixedStrategyMasterProblem'
@@ -132,7 +132,7 @@ class MixedStrategyMasterProblem(MathematicalModel):
 
 class AttackGenerationPricingProblem(MathematicalModel):
     def __init__(self, network, K, eps = 1e-9):
-        self._model_file = 'models/attack_generation_pricing_problem.mod'
+        self._model_file = 'models/mixed_strategy_attack_generation_pricing.mod'
         super(AttackGenerationPricingProblem, self).__init__(self._model_file)
         self.network = network
 
@@ -187,7 +187,7 @@ class AttackGenerationPricingProblem(MathematicalModel):
 
 class ControllerPlacementPricingProblem(MathematicalModel):
     def __init__(self, network, M, eps=1e-9):
-        self._model_file = 'models/controller_placement_pricing_problem.mod'
+        self._model_file = 'models/mixed_strategy_controller_placement_pricing.mod'
         super(ControllerPlacementPricingProblem, self).__init__(self._model_file)
 
         self._name = 'ControllerPlacementPricingProblem'
@@ -229,7 +229,7 @@ class ControllerPlacementPricingProblem(MathematicalModel):
 
 class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
     def __init__(self, network, M, bsc, bcc, eps=1e-9):
-        self._model_file = 'models/controller_placement_pricing_problem_with_delay.mod'
+        self._model_file = 'models/mixed_strategy_controller_placement_pricing_with_delay.mod'
         super(ControllerPlacementPricingProblemWithDelay, self).__init__(self._model_file)
 
         self._name = 'ControllerPlacementPricingProblem with Delay'
@@ -284,7 +284,7 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
 # PURE IMPLEMENTATIONS
 class CPOP(MathematicalModel):
     def __init__(self, network):
-        self._model_file = 'models/cpop.mod'
+        self._model_file = 'models/pure_strategy_cpop.mod'
         super(CPOP, self).__init__(self._model_file)
         self._name = 'CPOP'
 
@@ -327,7 +327,7 @@ class CPOP(MathematicalModel):
 class NAOP(MathematicalModel):
     def __init__(self, network):
         self.network = network
-        self._model_file = 'models/naop.mod'
+        self._model_file = 'models/pure_strategy_naop.mod'
         super(NAOP, self).__init__(self._model_file)
         self.name = 'NAOP'
 
