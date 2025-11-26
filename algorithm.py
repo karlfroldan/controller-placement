@@ -277,37 +277,9 @@ if __name__ == '__main__':
     n = Network('cost266')
     eps = 1e-9
     M = 6
-    K = 4
+    K = 3
 
-    p = ControllerOptimizationWithDelay(n, M, K, 1529.28, 1500)
+    # p = ControllerOptimizationWithDelay(n, M, K, 1529.28, 1500)
+    p = ControllerPlacementOptimization(n, M, K)
     r = p.run()
     print(r)
-
-    # problem = PureControllerPlacementGeneration(n, 6, 4)
-    # r = problem.run()
-    # attacks = r['attacks']
-    # Y_star = r['Y*']
-    # print(f'n attacks: {len(attacks)}, Y*: {Y_star}\n\n')
-
-    # cpop_time = r['total_cpop_time']
-    # naop_time = r['total_naop_time']
-    # print(f'P[{M}, A] = {cpop_time}, A[{K}, s*] = {naop_time}')
-    # s_star = r['s*']
-    # problem = PureAttackGeneration(n, 6, 4)
-    # r = problem.run([s_star])
-    # placements = r['placements']
-    # Z_star = r['Z*']
-    # print(f'n placements: {len(placements)}, Z*: {Z_star}')
-    # opt = ControllerPlacementOptimization(n, 1, 6)
-    # vals = opt.run()
-    # print(f'payoff = {vals['V*']}')
-    
-    # print(f'Placements')
-    # for s, q in zip(vals['placements'], vals['q*']):
-    #     if q >= eps:
-    #         print(f'{s} - {q:.2f}')
-    # print('Attacks')
-    # for a, p in zip(vals['attacks'], vals['p*']):
-    #     if p >= eps:
-    #         print(f'{a} - {p:.2f}')
-    

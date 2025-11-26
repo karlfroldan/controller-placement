@@ -3,6 +3,8 @@ import numpy as np
 import networkx as nx
 from networkx import Graph
 
+import matplotlib.pyplot as plt
+
 network_files = {
     'dognet': 'dognet.dat',
     'cost266': 'net-cost266-l.dat',
@@ -77,6 +79,16 @@ class Network:
             for w, dist in path_lengths.items():
                 self.delays[v, w] = dist
 
+    def draw(self):
+        pos = {}
+        labels = {}
+        for n in self.g.nodes:
+            p = (self.g.nodes[n]['loc_y'], self.g.nodes[n]['loc_x'])
+            pos[n] = p
+            labels[n] = self.g.nodes[n]['label']
+        nx.draw(self.g, pos=pos, with_labels=True, labels=labels)
+        plt.show()
+
     def load_from_file(self, filename):
         parsed_data = {
             'nodes': [],
@@ -137,7 +149,7 @@ class Network:
             self.g.add_node(n['id'] - 1, loc_x=n['x'], loc_y=n['y'], label=n['label'])
         
         for e in parsed_data['edges']:
-            self.g.add_edge(e['src'] - 1, e['dst'], weight=e['w'])
+            self.g.add_edge(e['src'] - 1, e['dst'] - 1, weight=e['w'])
         
 if __name__ == '__main__':
     n = Network('networks/dognet.dat')

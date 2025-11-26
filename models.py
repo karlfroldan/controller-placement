@@ -141,6 +141,8 @@ class AttackGenerationPricingProblem(MathematicalModel):
         self.eps = eps
         self.K = K
 
+        # self.ampl.set_option('cplex_options', 'mipdisplay=2 mipinterval=1')
+
     def non_zero_placements(self, placements, q_star):
         new_placements = []
         new_q_star = []
@@ -169,21 +171,33 @@ class AttackGenerationPricingProblem(MathematicalModel):
         placements, q_star = self.non_zero_placements(placements, q_star)
         # Convert them to IDs
         s_prime = placements
-        # s_prime = [i for i in range(len(self.placements))]
         placement_mapping = to_set_ids(s_prime)
         vertex_set = set(self.network.nodes)
-        # vertex_set = list(self.network.nodes())
         edge_set = set(self.network.edges)
 
-        v_s = placement_mapping
+        # n_vertices = len(vertex_set)
+        # print(f'# vertices: {n_vertices}')
 
-        self.ampl.set['V'] = vertex_set
-        self.ampl.set['S_PRIME'] = set(placement_mapping.keys())
-        self.ampl.set['E'] = edge_set
-        self.ampl.set['V_S'] = v_s
+        self.ampl.set['VERTICES'] = vertex_set
+        self.ampl.set['PLACEMENTS'] = set(placement_mapping.keys())
+        self.ampl.set['EDGES'] = edge_set
+        # How placement IDs related to the actual placements.
+        self.ampl.set['V_S'] = placement_mapping
 
         self.ampl.param['K'] = self.K
         self.ampl.param['q_star'] = q_star
+        # n_vars = int(self.ampl.get_value('_nvars'))
+        # n_cons = int(self.ampl.get_value('_ncons'))
+
+        # print(f'variables: {n_vars}, constraints: {n_cons}')
+
+        v_F = self.ampl.get_variable('F').num_instances()
+        v_a = self.ampl.get_variable('a').num_instances()
+        v_z = self.ampl.get_variable('z').num_instances()
+        # print(f'num instances <<< F: {v_F}, a: {v_a}, z: {v_z}')
+
+        # self.ampl.eval('write "model_ampl";')
+        # self.ampl.eval('expand > ampl_debug.lp;')
 
 class ControllerPlacementPricingProblem(MathematicalModel):
     def __init__(self, network, M, eps=1e-9):
@@ -358,6 +372,8 @@ class NAOP(MathematicalModel):
 
         alpha = {i: e[0] for i, e in enumerate(edgeid2edge)}
         beta = {i: e[1] for i, e in enumerate(edgeid2edge)}
+
+
 
         # SETS
         self.ampl.set['VERTICES'] = set(vertex_list)
