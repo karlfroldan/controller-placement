@@ -3,7 +3,7 @@ import numpy as np
 
 from network import Network
 
-from models import *
+from model import *
 
 def make_ones(m, n):
     """Create a list of size M with N ones"""
@@ -40,6 +40,77 @@ class InitialGeneration:
             'attack': [one_indices(make_ones(V, self.K))],
         }
 
+class InitialGenerationWithDelay:
+    def __init__(self, network, M, K, bsc, bcc, n_generations):
+        self.M = M
+        self.K = K
+        self.network = network
+        self.placement_gen = FeasibleControllerPlacementWithDelay(network, M, bcc, bsc)
+        self.n_placement_gens = n_generations
+
+    def initialize(self):
+        V = len(list(self.network.nodes))
+        attack = one_indices(make_ones(V, self.K))
+        placements = []
+        for i in range(self.n_placement_gens):
+            if i == 0:
+                self.placement_gen.load_data()
+            else:
+                self.placement_gen.load_data(placements = placements)
+
+
+            self.placement_gen.solve()
+            r = self.placement_gen.report()
+            if one_indices(r['s']) == []:
+                break
+            s = one_indices(r['s'])
+            placements.append(s)
+
+        return {
+            'placement': placements,
+            'attack': [attack],
+        }
+
+class InitialGenerationWithDelayAndBC:
+    def __init__(self, network, P, B, K, bsc, bcc, n_generations):
+        self.P = P
+        self.B = B
+        self.K = K
+        self.network = network
+        self.placement_gen = FeasibleControllerPlacementWithDelayAndBC(network, P, B, bcc, bsc)
+        self.n_placement_gens = n_generations
+
+    def initialize(self):
+        V = len(list(self.network.nodes))
+        attack = one_indices(make_ones(V, self.K))
+
+        primaries = []
+        backups = []
+
+        for i in range(self.n_placement_gens):
+            if i == 0:
+                self.placement_gen.load_data()
+            else:
+                self.placement_gen.load_data(primaries, backups)
+
+            self.placement_gen.solve()
+            r = self.placement_gen.report()
+            if one_indices(r['y']) == [] or one_indices(r['x']) == []:
+                break
+
+            prim = one_indices(r['y'])
+            backup = one_indices(r['x'])
+
+            primaries.append(prim)
+            backups.append(backup)
+
+        return {
+            'primary_controllers': primaries,
+            'backup_controllers': backups,
+            'attack': [attack],
+        }
+            
+
 class ControllerPlacementOptimization:
     def __init__(self, network, M, K, eps = 1e-9):
         self.M = M
@@ -63,6 +134,9 @@ class ControllerPlacementOptimization:
         initial = self.initializer_model.initialize()
         placements = initial['placement']
         attacks = initial['attack']
+
+        print(f'Initial placements: {placements}')
+        print(f'Initial attacks: {attacks}')
         
         # Solve the master problem first.
         mp_out = self._solve_master_problem(placements, attacks)
@@ -161,11 +235,32 @@ class ControllerPlacementOptimization:
         }
 
 class ControllerOptimizationWithDelay(ControllerPlacementOptimization):
-    def __init__(self, network, M, K, bsc, bcc):
-        super(ControllerOptimizationWithDelay, self).__init__(network, M, K)
+    def __init__(self, network, M, K, bsc, bcc, initialized_placements = 1):
+        super().__init__(network, M, K)
         self.controller_gen_model = ControllerPlacementPricingProblemWithDelay(network, M, bsc, bcc)
+        self.initializer_model = InitialGenerationWithDelay(network, M, K, bsc, bcc, initialized_placements)
         self.bsc = bsc
         self.bcc = bcc
+
+class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
+    def __init__(self, network, P, B, K, bsc, bcc, initialized_placements = 1):
+        super().__init__(network, 0, K)
+        
+        self.P = P
+        self.B = B
+        self.K = K
+
+        self.controller_gen_model = ControllerPlacementPricingProblemWithDelayAndBC(network, P, B, bsc, bcc)
+        self.initializer_model = InitialGenerationWithDelayAndBC(network, P, B, K, bsc, bcc, initialized_placements)
+        self.bsc = bsc
+        self.bcc = bcc
+    def run(self):
+        initial = self.initializer_model.initialize()
+        primary_placements = initial['primary_controllers']
+        backup_placements = initial['backup_controllers']
+
+        attacks = initial['attack']
+        
 
 class PureControllerPlacementGeneration:
     def __init__(self, network, M, K):
@@ -193,7 +288,7 @@ class PureControllerPlacementGeneration:
             self.naop.solve()
             end_time = time.time()
 
-            total_cpop_time += end_time - begin_time
+            total_naop_time += end_time - begin_time
             
             r = self.naop.report()
             a_star = one_indices(r['a'])
@@ -211,7 +306,7 @@ class PureControllerPlacementGeneration:
             self.cpop.solve()
             end_time = time.time()
 
-            total_naop_time = end_time - begin_time
+            total_cpop_time = end_time - begin_time
 
             r = self.cpop.report()
             s_star = one_indices(r['s'])

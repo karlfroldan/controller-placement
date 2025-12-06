@@ -1,18 +1,17 @@
-
 # vertices in the graph
 set VERTICES;
 # attacks. These are simply indices
 set ATTACKS;
 # Nodes affected by the attack
-set V_A {ATTACKS} within VERTICES;
+set VERTICES_A {ATTACKS} within VERTICES;
 # vertices exceeding BCC {{v, w} in V^|2| : d(v, w) > BCC}
 set U within {VERTICES, VERTICES};
 # C(a) is the set of components resulting from an attack a
 ## Component Ids hold the indices of components resulting from attack a
 set COMPONENT_IDS {ATTACKS};
-set C_A {a in ATTACKS, COMPONENT_IDS[a]} within VERTICES;
+set C {a in ATTACKS, COMPONENT_IDS[a]} within VERTICES;
 # Sets related to delays
-set W_V {VERTICES} within VERTICES;
+set W {VERTICES} within VERTICES;
 
 # Number of surviving nodes given attack
 var Y {ATTACKS} integer >= 0;
@@ -32,11 +31,11 @@ maximize OperatorPayoff:
 s.t. NumberOfControllers:
     sum {v in VERTICES} s[v] = M;
 
-s.t. ZeroAttackedNodes {a in ATTACKS, v in V_A[a]}:
+s.t. ZeroAttackedNodes {a in ATTACKS, v in VERTICES_A[a]}:
     y[v, a] = 0;
 
 s.t. ZeroComponentsWithoutControllers {a in ATTACKS, c_id in COMPONENT_IDS[a]}:
-    sum {v in C_A[a, c_id]} y[v, a] <= card(C_A[a, c_id]) * sum {v in C_A[a, c_id]} s[v];
+    sum {v in C[a, c_id]} y[v, a] <= card(C[a, c_id]) * sum {v in C[a, c_id]} s[v];
 
 s.t. NumberOfSurvivingNodes {a in ATTACKS}:
     Y[a] = sum {v in VERTICES} y[v, a];
@@ -45,4 +44,4 @@ s.t. SatisfyCCDelay {(v, w) in U}:
     s[v] + s[w] <= 1;
 
 s.t. SatisfySCDelay {v in VERTICES}:
-    sum {w in W_V[v]} s[w] >= 1;
+    sum {w in W[v]} s[w] >= 1;

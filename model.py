@@ -37,12 +37,6 @@ class MathematicalModel:
 
         assert(model_file)
         self.ampl = AMPL()
-        # self.ampl.setOption('cplex_options', 'mipdisplay=0 lpmethod=0 barrier display=0 simplex display=0')
-        # self.ampl.setOption('solver_msg', 0)
-
-        # self.ampl.setOption('solver_msg', 0)
-        # self.ampl.setOption('show_presolve_messages', 0)
-        # self.ampl.setOption('cplex_options', 'mipdisplay=0 outlev=0 version=0')
 
         self._solved = False
         self._model_file = model_file
@@ -51,6 +45,7 @@ class MathematicalModel:
         self._load_model()
 
     def _reset(self):
+        self._solved = False
         self.ampl.eval('reset data;')
 
     def _load_model(self, model_file = None):
@@ -68,6 +63,10 @@ class MathematicalModel:
         self.ampl.option['solver'] = solver
         self.ampl.solve()
         self._solved = True
+
+        print(f'Result = {self.ampl.solve_result}')
+        assert self.ampl.solve_result == "solved", self.ampl.solve_result
+
 
     def __str__(self):
         vars_map = self.ampl.get_variables()
@@ -112,21 +111,41 @@ class MixedStrategyMasterProblem(MathematicalModel):
 
     def load_data(self, placements, attacks):
         super(MixedStrategyMasterProblem, self).load_data()
+        # We have backup controllers
+        if isinstance(placements, tuple):
+            primary_controllers = placements[0]
+            backup_controllers = placements[1]
+
+            primary_placement_mapping = to_set_ids(primary_controllers)
+            backup_placement_mapping = to_set_ids(backup_controllers)
+
+            placement_keys = placement_mapping.keys()
+        else:
+            placement_mapping = to_set_ids(placements)
+            placement_keys = placement_mapping.keys()
+
         # Convert them to IDs so we can pass them as sets.
-        placement_mapping = to_set_ids(placements)
+
         attack_mapping = to_set_ids(attacks)
 
-        self.ampl.set['S'] = sorted(placement_mapping.keys())
+        self.ampl.set['S'] = sorted(placement_keys)
         self.ampl.set['A'] = sorted(attack_mapping.keys())
 
         v_data = {}
 
-        for i, p in placement_mapping.items():
+        for i in placement_keys:
             for j, a in attack_mapping.items():
-                surviving_nodes = len(self.network.surviving_nodes(p, a))
-                assert(isinstance(surviving_nodes, int))
+                if isinstance(placements, tuple):
+                    p = primary_placement_mapping[i]
+                    b = backup_placement_mapping[i]
+                    surviving_nodes = self.network.surviving_nodes(p, a, backup_controllers = b)
+                else:
+                    surviving_nodes = self.network.surviving_nodes(p, a)
+                n_survivors = len(surviving_nodes)
+                
+                assert(isinstance(n_survivors, int))
 
-                v_data[(i, j)] = surviving_nodes
+                v_data[(i, j)] = n_survivors
 
         self.ampl.param['V'] = v_data
 
@@ -140,8 +159,6 @@ class AttackGenerationPricingProblem(MathematicalModel):
 
         self.eps = eps
         self.K = K
-
-        # self.ampl.set_option('cplex_options', 'mipdisplay=2 mipinterval=1')
 
     def non_zero_placements(self, placements, q_star):
         new_placements = []
@@ -175,9 +192,6 @@ class AttackGenerationPricingProblem(MathematicalModel):
         vertex_set = set(self.network.nodes)
         edge_set = set(self.network.edges)
 
-        # n_vertices = len(vertex_set)
-        # print(f'# vertices: {n_vertices}')
-
         self.ampl.set['VERTICES'] = vertex_set
         self.ampl.set['PLACEMENTS'] = set(placement_mapping.keys())
         self.ampl.set['EDGES'] = edge_set
@@ -186,18 +200,10 @@ class AttackGenerationPricingProblem(MathematicalModel):
 
         self.ampl.param['K'] = self.K
         self.ampl.param['q_star'] = q_star
-        # n_vars = int(self.ampl.get_value('_nvars'))
-        # n_cons = int(self.ampl.get_value('_ncons'))
-
-        # print(f'variables: {n_vars}, constraints: {n_cons}')
 
         v_F = self.ampl.get_variable('F').num_instances()
         v_a = self.ampl.get_variable('a').num_instances()
         v_z = self.ampl.get_variable('z').num_instances()
-        # print(f'num instances <<< F: {v_F}, a: {v_a}, z: {v_z}')
-
-        # self.ampl.eval('write "model_ampl";')
-        # self.ampl.eval('expand > ampl_debug.lp;')
 
 class ControllerPlacementPricingProblem(MathematicalModel):
     def __init__(self, network, M, eps=1e-9):
@@ -225,18 +231,19 @@ class ControllerPlacementPricingProblem(MathematicalModel):
         # Key => attack set pair
         attack_dict = to_set_ids(attacks)
 
-        self.ampl.set['VERTICES'] = vertex_list
-        self.ampl.set['ATTACKS'] = attack_dict.keys()
+
         
         V_A = {}
         for i, a in attack_dict.items():
             V_A[i] = a
-        self.ampl.set['V_A'] = V_A
 
         C_IDS, C_A = component_ids_on_attack(self.network, attack_dict)
 
+        self.ampl.set['VERTICES'] = vertex_list
+        self.ampl.set['ATTACKS'] = attack_dict.keys()
         self.ampl.set['COMPONENT_IDS'] = C_IDS
         self.ampl.set['C_A'] = C_A
+        self.ampl.set['V_A'] = V_A
 
         self.ampl.param['M'] = self.M
         self.ampl.param['p_star'] = p_star
@@ -273,26 +280,82 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
 
         # Key => attack set pair
         attack_dict = to_set_ids(attacks)
-
-        self.ampl.set['VERTICES'] = vertex_list
-        self.ampl.set['ATTACKS'] = attack_dict.keys()
-
         V_A = {}
         for i, a in attack_dict.items():
             # vs = self.network.remaining_nodes(a)
             V_A[i] = a
-        self.ampl.set['V_A'] = V_A
-
-        self.ampl.set['U'] = pairs_exceeding_bcc_delay(self.network, self.bcc)
-        self.ampl.set['W_V'] = nodes_within_bsc_delay(self.network, self.bsc)
         
         # Components after the attack. c in C(a) contains the list of vertices in each component
         C_IDS, C_A = component_ids_on_attack(self.network, attack_dict)
 
+        self.ampl.set['VERTICES'] = vertex_list
+        self.ampl.set['ATTACKS'] = attack_dict.keys()
+        self.ampl.set['U'] = pairs_exceeding_bcc_delay(self.network, self.bcc)
+        self.ampl.set['VERTICES_A'] = V_A
+        self.ampl.set['W'] = nodes_within_bsc_delay(self.network, self.bsc)
         self.ampl.set['COMPONENT_IDS'] = C_IDS
-        self.ampl.set['C_A'] = C_A
+        self.ampl.set['C'] = C_A
 
         self.ampl.param['M'] = self.M
+        self.ampl.param['p_star'] = p_star
+
+class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
+    def __init__(self, network, P, B, bsc, bcc, eps=1e-9):
+        self._model_file = 'models/mixed_strategy_controller_placement_pricing_with_delay_bc.mod'
+        super(ControllerPlacementPricingProblemWithDelayAndBC, self).__init__(self._model_file)
+
+        self._name = 'ControllerPlacementPricingProblem with Delay and Backup Controllers'
+        self.network = network
+        self.eps = eps
+        # Bound on the BSC delay
+        self.bsc = bsc
+        # Bound on the BCC delay
+        self.bcc = bcc
+
+        self.P = P
+        self.B = B
+
+    def report(self):
+        if not self._solved:
+            self.solve()
+        var_primary = self.ampl.get_variables()['y']
+        y_star = values_to_list(var_primary)
+        # Y_star = values_to_list(self.ampl.get_variables()['Y'])
+
+        # V_star = self.ampl.get_objectives()['OperatorPayoff'].value()
+
+        var_backup = self.ampl.get_variables()['x']
+        x_star = values_to_list(var_backup)
+        
+        return {
+            'y*': y_star,
+            'x*': x_star,
+        }
+
+    def load_data(self, attacks, p_star):
+        super(ControllerPlacementPricingProblemWithDelayAndBC, self).load_data()
+        vertex_list = set(self.network.nodes)
+
+        # Key => attack set pair
+        attack_dict = to_set_ids(attacks)
+        V_A = {}
+        for i, a in attack_dict.items():
+            # vs = self.network.remaining_nodes(a)
+            V_A[i] = a
+        
+        # Components after the attack. c in C(a) contains the list of vertices in each component
+        C_IDS, C_A = component_ids_on_attack(self.network, attack_dict)
+
+        self.ampl.set['VERTICES'] = vertex_list
+        self.ampl.set['ATTACKS'] = attack_dict.keys()
+        self.ampl.set['U'] = pairs_exceeding_bcc_delay(self.network, self.bcc)
+        self.ampl.set['VERTICES_A'] = V_A
+        self.ampl.set['W'] = nodes_within_bsc_delay(self.network, self.bsc)
+        self.ampl.set['COMPONENT_IDS'] = C_IDS
+        self.ampl.set['C'] = C_A
+
+        self.ampl.param['P'] = self.P
+        self.ampl.param['B'] = self.B
         self.ampl.param['p_star'] = p_star
 
 # PURE IMPLEMENTATIONS
@@ -370,10 +433,9 @@ class NAOP(MathematicalModel):
 
         V_S = {i: set(s) for i, s in enumerate(placements)}
 
-        alpha = {i: e[0] for i, e in enumerate(edgeid2edge)}
-        beta = {i: e[1] for i, e in enumerate(edgeid2edge)}
-
-
+        # print(edgeid2edge)
+        alpha = {i: e[0] for i, e in edgeid2edge.items()}
+        beta = {i: e[1] for i, e in edgeid2edge.items()}
 
         # SETS
         self.ampl.set['VERTICES'] = set(vertex_list)
@@ -399,3 +461,116 @@ class NAOP(MathematicalModel):
             'a': a_star,
             'Z': objective_Z.value()
         }
+
+class FeasibleControllerPlacementWithDelay(MathematicalModel):
+    def __init__(self, network, M, bcc, bsc, n_differences=1):
+        self._model_file = 'models/feasible_controller_placement_with_delay.mod'
+        super(FeasibleControllerPlacementWithDelay, self).__init__(self._model_file)
+        self.network = network
+        self.M = M
+        self.bcc = bcc
+        self.bsc = bsc
+        self.n_differences = n_differences
+
+    def load_data(self, placements = []):
+        super(FeasibleControllerPlacementWithDelay, self).load_data()
+
+        T = {i: s for i, s in enumerate(placements)}
+
+        vertex_list = set(self.network.nodes)
+        self.ampl.set['VERTICES'] = set(vertex_list)
+        self.ampl.set['L'] = set_range(placements)
+        self.ampl.set['T'] = T
+        self.ampl.set['U'] = pairs_exceeding_bcc_delay(self.network, self.bcc)
+        self.ampl.set['W'] = nodes_within_bsc_delay(self.network, self.bsc)
+
+        # print(f'M = {self.M}, m = {self.n_differences}')
+        self.ampl.param['big_M'] = self.M
+        self.ampl.param['small_m'] = self.n_differences
+
+    def report(self):
+        if not self._solved:
+            self.solve()
+
+        var_s = self.ampl.get_variables()['s']
+        s_star = values_to_list(var_s)
+        return {
+            's': s_star,
+        }
+
+class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
+    def __init__(self, network, P, B, bcc, bsc, n_differences=1):
+        self._model_file = 'models/feasible_controller_placement_with_delay_and_bc.mod'
+        super(FeasibleControllerPlacementWithDelayAndBC, self).__init__(self._model_file)
+        self.network = network
+        self.P = P
+        self.B  =B
+        self.bcc = bcc
+        self.bsc = bsc
+        self.n_differences = n_differences
+
+    def load_data(self, primary_controllers = [], backup_controllers = []):
+        assert(len(primary_controllers) == len(backup_controllers))
+
+        super(FeasibleControllerPlacementWithDelayAndBC, self).load_data()
+
+        T_primary = {i: s for i, s in enumerate(primary_controllers)}
+        T_backup = {i: s for i, s in enumerate(backup_controllers)}
+
+        vertex_list = set(self.network.nodes)
+        self.ampl.set['VERTICES'] = set(vertex_list)
+        self.ampl.set['L'] = set_range(primary_controllers)
+        self.ampl.set['T_primary'] = T_primary
+        self.ampl.set['T_backup'] = T_backup
+        self.ampl.set['U'] = pairs_exceeding_bcc_delay(self.network, self.bcc)
+        self.ampl.set['W'] = nodes_within_bsc_delay(self.network, self.bsc)
+
+        # print(f'M = {self.M}, m = {self.n_differences}')
+        self.ampl.param['m'] = self.n_differences
+
+        self.ampl.param['P'] = self.P
+        self.ampl.param['B'] = self.B
+
+    def report(self):
+        if not self._solved:
+            self.solve()
+
+        var_x = self.ampl.get_variables()['x']
+        x_star = values_to_list(var_x)
+        var_y = self.ampl.get_variables()['y']
+        y_star = values_to_list(var_y)
+        return {
+            'x': x_star,
+            'y': y_star,
+        }
+
+if __name__ == '__main__':
+    from network import Network
+    from algorithm import one_indices
+    n = Network('dognet')
+
+    primaries = []
+    backups = []
+
+    p = FeasibleControllerPlacementWithDelayAndBC(n, 3, 2, 3, 2)
+    p.load_data()
+    r = p.report()
+    prim = one_indices(r['y'])
+    backup = one_indices(r['x'])
+    print(prim, backup)
+
+    primaries.append(prim)
+    backups.append(backup)
+
+    for _ in range(3):
+        p.load_data(primaries, backups)
+        r = p.report()
+        prim = one_indices(r['y'])
+        backup = one_indices(r['x'])
+        print(prim, backup)
+        primaries.append(prim)
+        backups.append(backup)
+    
+    # p = ControllerPlacementPricingProblemWithDelayAndBC(n, 1, 2, 3, 2)
+    # p.load_data([[4, 5], [2, 8]], [0.4, 0.6])
+    # print(p.report())
