@@ -3,7 +3,7 @@ import numpy as np
 from itertools import product
 from amplpy import AMPL
 
-from utils import normalize_probabilities, set_range, values_to_list, to_set_ids
+from utils import normalize_probabilities, set_range, values_to_list, to_set_ids, one_indices
 
 def component_ids_on_attack(network, attacks):
     # Contains the IDS of the components
@@ -53,6 +53,11 @@ class MathematicalModel:
             f = model_file if model_file else self._model_file
             self.ampl.read(f)
             self._model_loaded = True
+
+    def get_result_array(self, v):
+        vs = self.ampl.get_variables()[v]
+        vs = values_to_list(vs)
+        return vs
 
     def load_data(self):
         self._reset()
@@ -498,10 +503,70 @@ class FeasibleControllerPlacementWithDelay(MathematicalModel):
             's': s_star,
         }
 
+class MostDangerousKNodeAttack(MathematicalModel):
+    def __init__(self, network, K):
+        self._model_file = 'models/most_dangerous_k_node_attack.mod'
+        super().__init__(self._model_file)
+        self.K = K
+        self.network = network
+
+    def report(self):
+        if not self._solved:
+            self.solve()
+
+        obj = self.ampl.getObjective('Payoff').value()
+        return obj
+
+    def generate_k(self, k):
+        attacks = []
+
+        for i in range(k):
+            self.load_data(attacks)
+            self.solve()
+            # Get the current generated attack
+            a = self.get_result_array('a')
+            obj = self.ampl.getObjective('Payoff').value()
+            assert(sum(a) == self.K)
+            attacks.append(one_indices(a))
+            print(f'objective: {obj}, attack = {one_indices(a)}')
+        return attacks
+
+    def load_data(self, attacks = []):
+        super().load_data()
+
+        nv = list(self.network.nodes)
+        edges = self.network.edges
+
+        def is_edge(x):
+            x1, x2 = x
+            return (x1, x2) in edges or (x2, x1) in edges
+
+        adj_dict = {
+            v: list(adjdict.keys()) for v, adjdict in self.network.adjacency()
+        }
+
+        h = list(filter(lambda x: x[0] < x[1], product(nv, nv)))
+        he = list(filter(is_edge, h))
+
+        deg = {
+            v: self.network.degree(v) for v in nv
+        }
+
+        self.ampl.set['VERTICES'] = nv
+        self.ampl.set['ATTACK_IDX'] = set_range(attacks)
+        self.ampl.set['ATTACKS'] = to_set_ids(attacks)
+        self.ampl.set['ADJ'] = adj_dict
+        self.ampl.set['H'] = h
+        self.ampl.set['H_EDGES'] = he
+
+        self.ampl.param['deg'] = deg
+        self.ampl.param['K'] = self.K
+
+
 class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
     def __init__(self, network, P, B, bcc, bsc, n_differences=1):
         self._model_file = 'models/feasible_controller_placement_with_delay_and_bc.mod'
-        super(FeasibleControllerPlacementWithDelayAndBC, self).__init__(self._model_file)
+        super().__init__(self._model_file)
         self.network = network
         self.P = P
         self.B  =B
@@ -512,7 +577,7 @@ class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
     def load_data(self, primary_controllers = [], backup_controllers = []):
         assert(len(primary_controllers) == len(backup_controllers))
 
-        super(FeasibleControllerPlacementWithDelayAndBC, self).load_data()
+        super().load_data()
 
         T_primary = {i: s for i, s in enumerate(primary_controllers)}
         T_backup = {i: s for i, s in enumerate(backup_controllers)}
@@ -547,29 +612,31 @@ class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
 if __name__ == '__main__':
     from network import Network
     from algorithm import one_indices
-    n = Network('dognet')
+    n = Network('cost266')
 
-    primaries = []
-    backups = []
+    p = MostDangerousKNodeAttack(n, 6)
+    attacks = p.generate_k(12)
+    # primaries = []
+    # backups = []
 
-    p = FeasibleControllerPlacementWithDelayAndBC(n, 3, 2, 3, 2)
-    p.load_data()
-    r = p.report()
-    prim = one_indices(r['y'])
-    backup = one_indices(r['x'])
-    print(prim, backup)
+    # p = FeasibleControllerPlacementWithDelayAndBC(n, 3, 2, 3, 2)
+    # p.load_data()
+    # r = p.report()
+    # prim = one_indices(r['y'])
+    # backup = one_indices(r['x'])
+    # print(prim, backup)
 
-    primaries.append(prim)
-    backups.append(backup)
+    # primaries.append(prim)
+    # backups.append(backup)
 
-    for _ in range(3):
-        p.load_data(primaries, backups)
-        r = p.report()
-        prim = one_indices(r['y'])
-        backup = one_indices(r['x'])
-        print(prim, backup)
-        primaries.append(prim)
-        backups.append(backup)
+    # for _ in range(3):
+    #     p.load_data(primaries, backups)
+    #     r = p.report()
+    #     prim = one_indices(r['y'])
+    #     backup = one_indices(r['x'])
+    #     print(prim, backup)
+    #     primaries.append(prim)
+    #     backups.append(backup)
     
     # p = ControllerPlacementPricingProblemWithDelayAndBC(n, 1, 2, 3, 2)
     # p.load_data([[4, 5], [2, 8]], [0.4, 0.6])

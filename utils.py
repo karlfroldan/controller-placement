@@ -26,3 +26,22 @@ def values_to_list(vs):
 def to_set_ids(lst):
     """Convert the list into a dictionary of ID to item pair"""
     return { idx: x for idx, x in enumerate(lst) }
+
+def make_ones(m, n):
+    """Create a list of size M with N ones"""
+    assert(m >= n)
+    ones = np.ones(n, dtype='int')
+    zeros = np.zeros(m - n, dtype='int')
+
+    rng = np.random.default_rng()
+    arr = np.concatenate((ones, zeros))
+    rng.shuffle(arr)
+    return arr
+
+def one_indices(xs):
+    # add1 = lambda x: x + 1
+
+    if isinstance(xs, list):
+        xs = np.array(xs)
+    binary = (xs >= 0.5).astype(int)
+    return np.where(binary == 1)[0].tolist()

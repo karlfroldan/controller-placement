@@ -4,24 +4,7 @@ import numpy as np
 from network import Network
 
 from model import *
-
-def make_ones(m, n):
-    """Create a list of size M with N ones"""
-    assert(m >= n)
-    ones = np.ones(n, dtype='int')
-    zeros = np.zeros(m - n, dtype='int')
-
-    rng = np.random.default_rng()
-    arr = np.concatenate((ones, zeros))
-    rng.shuffle(arr)
-    return arr
-
-def one_indices(xs):
-    # add1 = lambda x: x + 1
-
-    if isinstance(xs, list):
-        xs = np.array(xs)
-    return np.where(xs == 1)[0].tolist()
+from utils import make_ones, one_indices
 
 class InitialGeneration:
     """
@@ -109,7 +92,6 @@ class InitialGenerationWithDelayAndBC:
             'backup_controllers': backups,
             'attack': [attack],
         }
-            
 
 class ControllerPlacementOptimization:
     def __init__(self, network, M, K, eps = 1e-9):
