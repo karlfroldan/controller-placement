@@ -3,6 +3,8 @@ import numpy as np
 from itertools import product
 from amplpy import AMPL
 
+import networkx as nx
+
 from utils import normalize_probabilities, set_range, values_to_list, to_set_ids, one_indices
 
 def component_ids_on_attack(network, attacks):
@@ -69,7 +71,7 @@ class MathematicalModel:
         self.ampl.solve()
         self._solved = True
 
-        print(f'Result = {self.ampl.solve_result}')
+        # print(f'Result = {self.ampl.solve_result}')
         assert self.ampl.solve_result == "solved", self.ampl.solve_result
 
 
@@ -124,7 +126,7 @@ class MixedStrategyMasterProblem(MathematicalModel):
             primary_placement_mapping = to_set_ids(primary_controllers)
             backup_placement_mapping = to_set_ids(backup_controllers)
 
-            placement_keys = placement_mapping.keys()
+            placement_keys = primary_placement_mapping.keys()
         else:
             placement_mapping = to_set_ids(placements)
             placement_keys = placement_mapping.keys()
@@ -155,7 +157,7 @@ class MixedStrategyMasterProblem(MathematicalModel):
         self.ampl.param['V'] = v_data
 
 class AttackGenerationPricingProblem(MathematicalModel):
-    def __init__(self, network, K, eps = 1e-9):
+    def __init__(self, network, K, eps = 1e-9, budget=0, costs=None):
         self._model_file = 'models/mixed_strategy_attack_generation_pricing.mod'
         super(AttackGenerationPricingProblem, self).__init__(self._model_file)
         self.network = network
@@ -164,6 +166,8 @@ class AttackGenerationPricingProblem(MathematicalModel):
 
         self.eps = eps
         self.K = K
+        self.budget = budget
+        self.costs = costs
 
     def non_zero_placements(self, placements, q_star):
         new_placements = []
@@ -188,12 +192,24 @@ class AttackGenerationPricingProblem(MathematicalModel):
         
 
     def load_data(self, placements, q_star):
+        """
+        Possible values for `costs` can be `degree`, `centrality`, or a table of costs for each node.
+        If set as None, then all costs will be 0.
+        """
         super(AttackGenerationPricingProblem, self).load_data()
 
+        # Has backup controllers
+        if isinstance(placements, tuple):
+            # Combine the primary and backup controllers
+            
+            placements = [sorted(pc + bc) for pc, bc in zip(placements[0], placements[1])]
+
         placements, q_star = self.non_zero_placements(placements, q_star)
+
         # Convert them to IDs
         s_prime = placements
         placement_mapping = to_set_ids(s_prime)
+        # print(placement_mapping)
         vertex_set = set(self.network.nodes)
         edge_set = set(self.network.edges)
 
@@ -203,12 +219,32 @@ class AttackGenerationPricingProblem(MathematicalModel):
         # How placement IDs related to the actual placements.
         self.ampl.set['V_S'] = placement_mapping
 
-        self.ampl.param['K'] = self.K
+        if isinstance(self.K, int):
+            self.ampl.param['K_low'] = self.K
+            self.ampl.param['K_high'] = self.K
+        else:
+            self.ampl.param['K_low'] = self.K[0]
+            self.ampl.param['K_high'] = self.K[1]
         self.ampl.param['q_star'] = q_star
 
-        v_F = self.ampl.get_variable('F').num_instances()
-        v_a = self.ampl.get_variable('a').num_instances()
-        v_z = self.ampl.get_variable('z').num_instances()
+        self.ampl.param['budget'] = self.budget
+        
+        if self.costs is None:
+            self.ampl.param['cost'] = to_set_ids([0 for _ in vertex_set])
+        elif self.costs == 'degree':
+            assert(self.budget > 0)
+            cost_table = { v: self.network.degree(v) for v in vertex_set }
+            self.ampl.param['cost'] = cost_table
+            # print(f'cost_table: {cost_table}')
+        elif self.costs == 'load_centrality':
+            assert(self.budget > 0)
+            cost_table = nx.load_centrality(self.network.g)
+            # cost_table = { k: v for k, v in nx.load_centrality(self.network.g).items() }
+            self.ampl.param['cost'] = cost_table
+            # print(f'cost_table: {cost_table}')
+        else:
+            assert(self.budget > 0)
+            self.ampl.param['cost'] = cost_table
 
 class ControllerPlacementPricingProblem(MathematicalModel):
     def __init__(self, network, M, eps=1e-9):
@@ -307,7 +343,7 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
 class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
     def __init__(self, network, P, B, bsc, bcc, eps=1e-9):
         self._model_file = 'models/mixed_strategy_controller_placement_pricing_with_delay_bc.mod'
-        super(ControllerPlacementPricingProblemWithDelayAndBC, self).__init__(self._model_file)
+        super().__init__(self._model_file)
 
         self._name = 'ControllerPlacementPricingProblem with Delay and Backup Controllers'
         self.network = network
@@ -338,7 +374,7 @@ class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
         }
 
     def load_data(self, attacks, p_star):
-        super(ControllerPlacementPricingProblemWithDelayAndBC, self).load_data()
+        super().load_data()
         vertex_list = set(self.network.nodes)
 
         # Key => attack set pair
@@ -359,8 +395,19 @@ class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
         self.ampl.set['COMPONENT_IDS'] = C_IDS
         self.ampl.set['C'] = C_A
 
-        self.ampl.param['P'] = self.P
-        self.ampl.param['B'] = self.B
+        if isinstance(self.P, int):
+            self.ampl.param['P_low'] = self.P
+            self.ampl.param['P_high'] = self.P
+        else:
+            self.ampl.param['P_low'] = self.P[0]
+            self.ampl.param['P_high'] = self.P[1]
+
+        if isinstance(self.B, int):
+            self.ampl.param['B_low'] = self.B
+            self.ampl.param['B_high'] = self.B
+        else:
+            self.ampl.param['B_low'] = self.B[0]
+            self.ampl.param['B_high'] = self.B[1]            
         self.ampl.param['p_star'] = p_star
 
 # PURE IMPLEMENTATIONS
@@ -593,8 +640,10 @@ class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
         # print(f'M = {self.M}, m = {self.n_differences}')
         self.ampl.param['m'] = self.n_differences
 
-        self.ampl.param['P'] = self.P
-        self.ampl.param['B'] = self.B
+        # Get the lowest
+        self.ampl.param['P'] = self.P[0] if isinstance(self.P, tuple) else self.P
+        self.ampl.param['B'] = self.B[0] if isinstance(self.B, tuple) else self.B
+
 
     def report(self):
         if not self._solved:
@@ -614,8 +663,12 @@ if __name__ == '__main__':
     from algorithm import one_indices
     n = Network('cost266')
 
-    p = MostDangerousKNodeAttack(n, 6)
-    attacks = p.generate_k(12)
+    p = AttackGenerationPricingProblem(n, (3, 6), budget=13, costs='degree')
+    p.load_data([[4, 5, 24, 27, 30]], [1.0])
+    r = p.report()
+    a_star = one_indices(r['a*'])
+    
+    print(a_star)
     # primaries = []
     # backups = []
 

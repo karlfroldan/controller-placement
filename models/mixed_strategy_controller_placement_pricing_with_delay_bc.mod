@@ -24,9 +24,11 @@ var S {a in ATTACKS, COMPONENT_IDS[a]} binary;
 var Y {ATTACKS} >= 0;
 
 # Total number of primary controller nodes
-param P >= 1 integer;
+param P_low >= 1 integer;
+param P_high >= 1 integer;
 # Total number of backup controller nodes
-param B >= 0 integer;
+param B_low >= 0 integer;
+param B_high >= 0 integer;
 
 # Attack probability
 param p_star {ATTACKS};
@@ -37,11 +39,11 @@ maximize OperatorPayoff:
 
 # (1b)
 s.t. NumberOfPrimaryControllers:
-    sum {v in VERTICES} y[v] = P;
+    P_low <= sum {v in VERTICES} y[v] <= P_high;
 
 # (1c)
 s.t. NumberOfBackupControllers:
-    sum {v in VERTICES} x[v] = B;
+    B_low <= sum {v in VERTICES} x[v] <= B_high;
 
 # (1d) Respect Controller to controller delay for primary controllers only
 s.t. SatisfyCCDelay {(v, w) in U}:

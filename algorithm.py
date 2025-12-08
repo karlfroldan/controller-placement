@@ -65,7 +65,8 @@ class InitialGenerationWithDelayAndBC:
 
     def initialize(self):
         V = len(list(self.network.nodes))
-        attack = one_indices(make_ones(V, self.K))
+        K = self.K[0] if isinstance(self.K, tuple) else self.K
+        attack = one_indices(make_ones(V, K))
 
         primaries = []
         backups = []
@@ -99,9 +100,6 @@ class ControllerPlacementOptimization:
         self.K = K
         self.network = network
         self.V = len(list(network.nodes))
-
-        assert(self.V >= M)
-        assert(self.V >= K)
 
         self.initializer_model = InitialGeneration(network, M, K)
 
@@ -173,7 +171,7 @@ class ControllerPlacementOptimization:
         # s'.
         pp = self._make_controller_pricing_problem(attacks, p_star)
         s_star = one_indices(pp['s*'])
-
+        
         lhs = sum([
             len(self.network.surviving_nodes(s_star, a)) * p_a
             for a, p_a in zip(attacks, p_star)
@@ -225,7 +223,7 @@ class ControllerOptimizationWithDelay(ControllerPlacementOptimization):
         self.bcc = bcc
 
 class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
-    def __init__(self, network, P, B, K, bsc, bcc, initialized_placements = 1):
+    def __init__(self, network, P, B, K, bsc, bcc, initialized_placements = 1, attacker_budget=0, attacker_costs=None):
         super().__init__(network, 0, K)
         
         self.P = P
@@ -233,16 +231,108 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
         self.K = K
 
         self.controller_gen_model = ControllerPlacementPricingProblemWithDelayAndBC(network, P, B, bsc, bcc)
+        self.attack_gen_model = AttackGenerationPricingProblem(network, K, budget=attacker_budget, costs=attacker_costs)
         self.initializer_model = InitialGenerationWithDelayAndBC(network, P, B, K, bsc, bcc, initialized_placements)
         self.bsc = bsc
         self.bcc = bcc
+
     def run(self):
         initial = self.initializer_model.initialize()
         primary_placements = initial['primary_controllers']
         backup_placements = initial['backup_controllers']
-
         attacks = initial['attack']
+
+        print(f'Initial placements: {primary_placements}, {backup_placements}')
+        print(f'Initial attacks: {attacks}')
         
+        # Solve the master problem first.
+        mp_out = self._solve_master_problem((primary_placements, backup_placements), attacks)
+
+        placements = (primary_placements, backup_placements)
+
+        total_placement_time = 0.0
+        total_attack_time = 0.0
+
+        while True:
+            mp_out = self._one_round(placements, attacks, mp_out['p*'], mp_out['q*'], mp_out['x*'], mp_out['y*'])
+            total_placement_time += mp_out['placement_time']
+            total_attack_time += mp_out['attack_time']
+            
+            if not mp_out['updated']:
+                break;
+
+        return {
+            'V*': mp_out['x*'],
+            'p*': mp_out['p*'],
+            'q*': mp_out['q*'],
+            'primary_placements': mp_out['primary_placements'],
+            'backup_placements': mp_out['backup_placements'],
+            'attacks': mp_out['attacks'],
+            'placement_time': total_placement_time,
+            'attack_time': total_attack_time,
+        }        
+
+    def _one_round(self, placements, attacks, p_star, q_star, x_star, y_star):
+        updated_placement = False
+        # Solve the placement generation problem CP[ATTACKS, p*] to get placement
+        # s'.
+        t_begin = time.time()
+        pp = self._make_controller_pricing_problem(attacks, p_star)
+        t_end = time.time()
+        pc_time = t_end - t_begin
+
+        primary_placement = one_indices(pp['y*'])
+        backup_placement = one_indices(pp['x*'])
+
+        
+        lhs = sum([
+            len(self.network.surviving_nodes(primary_placement, a, backup_controllers=backup_placement)) * p_a
+            for a, p_a in zip(attacks, p_star)
+        ])
+
+        rhs = x_star
+
+        if lhs > rhs + self.eps:
+            placements[0].append(primary_placement)
+            placements[1].append(backup_placement)
+            updated_placement = True
+
+        # Solve the master problem again
+        mp_out = self._solve_master_problem(placements, attacks)
+        q_star = mp_out['q*']
+
+        # Solve the attack generation problem
+        # For the attack generation problem, we might only want to care about the primary controllers
+        t_begin = time.time()
+        agp = self._make_attack_generation_pricing_problem(placements, q_star)
+        t_end = time.time()
+        ag_time = t_end - t_begin
+        a_star = one_indices(agp['a*'])
+
+        rhs = sum([
+            len(self.network.surviving_nodes(s1, a_star, backup_controllers=s2)) * q_a
+            for s1, s2, q_a in zip(placements[0], placements[1], q_star)
+        ])
+
+        lhs = y_star
+        if lhs > rhs + self.eps:
+            attacks.append(a_star)
+            updated_placement = True
+
+        mp_out = self._solve_master_problem(placements, attacks)
+
+        return {
+            'updated': updated_placement,
+            'primary_placements': placements[0],
+            'backup_placements': placements[1],
+            'attacks': attacks,
+            'x*': mp_out['x*'],
+            'y*': mp_out['y*'],
+            'q*': mp_out['q*'],
+            'p*': mp_out['p*'],
+            'placement_time': pc_time,
+            'attack_time': ag_time,
+        }
 
 class PureControllerPlacementGeneration:
     def __init__(self, network, M, K):

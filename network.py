@@ -42,7 +42,7 @@ class Network:
         induce = lambda nodes: nx.induced_subgraph(self.g, nodes)
 
         remaining_nodes = g_nodes.difference(set(attack_ids))
-            
+
         H = induce(remaining_nodes)
         # This recreates the remaining component subgraphs
         connected_components = map(lambda s: induce(sorted(list(s))), nx.connected_components(H))
@@ -56,7 +56,7 @@ class Network:
         controller_ids = set(controller_ids)
         if backup_controllers:
             backup_controllers = set(backup_controllers)
-            controller_ids.union(backup_controllers)
+            controller_ids = controller_ids.union(backup_controllers)
             
         # backup_controllers = set(backup_controllers)
         for c in connected_components:
