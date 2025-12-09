@@ -257,13 +257,21 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
         total_placement_time = 0.0
         total_attack_time = 0.0
 
+        y_star_list = []
+        x_star_list = []
+
         while True:
-            mp_out = self._one_round(placements, attacks, mp_out['p*'], mp_out['q*'], mp_out['x*'], mp_out['y*'])
+            mp_out = self._one_round(placements, attacks, mp_out['p*'],
+                                     mp_out['q*'], mp_out['x*'], mp_out['y*'])
+
+            y_star_list.append(mp_out['placement_convergence'])
+            x_star_list.append(mp_out['attack_convergence'])
+
             total_placement_time += mp_out['placement_time']
             total_attack_time += mp_out['attack_time']
-            
+
             if not mp_out['updated']:
-                break;
+                break
 
         return {
             'V*': mp_out['x*'],
@@ -274,7 +282,9 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
             'attacks': mp_out['attacks'],
             'placement_time': total_placement_time,
             'attack_time': total_attack_time,
-        }        
+            'placement_convergence': y_star_list,
+            'attack_convergence': x_star_list,
+        }
 
     def _one_round(self, placements, attacks, p_star, q_star, x_star, y_star):
         updated_placement = False
@@ -288,11 +298,12 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
         primary_placement = one_indices(pp['y*'])
         backup_placement = one_indices(pp['x*'])
 
-        
         lhs = sum([
             len(self.network.surviving_nodes(primary_placement, a, backup_controllers=backup_placement)) * p_a
             for a, p_a in zip(attacks, p_star)
         ])
+
+        placement_res = lhs
 
         rhs = x_star
 
@@ -318,6 +329,8 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
             for s1, s2, q_a in zip(placements[0], placements[1], q_star)
         ])
 
+        attack_res = rhs
+
         lhs = y_star
         if lhs > rhs + self.eps:
             attacks.append(a_star)
@@ -336,6 +349,8 @@ class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
             'p*': mp_out['p*'],
             'placement_time': pc_time,
             'attack_time': ag_time,
+            'placement_convergence': placement_res,
+            'attack_convergence': attack_res,
         }
 
 class PureControllerPlacementGeneration:

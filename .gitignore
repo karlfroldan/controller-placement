@@ -8,3 +8,4 @@ __pycache__/
 *.csv
 .dir-locals.el
 experiment.py
+*.png
