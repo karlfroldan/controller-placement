@@ -79,13 +79,16 @@ class Network:
             for w, dist in path_lengths.items():
                 self.delays[v, w] = dist
 
-    def draw(self):
+    def draw(self, node_id='name'):
         pos = {}
         labels = {}
-        for n in self.g.nodes:
+        for ix, n in enumerate(self.g.nodes):
             p = (self.g.nodes[n]['loc_y'], self.g.nodes[n]['loc_x'])
             pos[n] = p
-            labels[n] = self.g.nodes[n]['label']
+            if node_id == 'name':
+                labels[n] = self.g.nodes[n]['label']
+            else:
+                labels[n] = ix
         nx.draw(self.g, pos=pos, with_labels=True, labels=labels)
         plt.show()
 
