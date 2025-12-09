@@ -79,18 +79,27 @@ class Network:
             for w, dist in path_lengths.items():
                 self.delays[v, w] = dist
 
-    def draw(self, node_id='name'):
-        pos = {}
-        labels = {}
-        for ix, n in enumerate(self.g.nodes):
-            p = (self.g.nodes[n]['loc_y'], self.g.nodes[n]['loc_x'])
-            pos[n] = p
-            if node_id == 'name':
-                labels[n] = self.g.nodes[n]['label']
-            else:
-                labels[n] = ix
+    def _make_pos(self):
+        return {
+            n: (self.g.nodes[n]['loc_y'], self.g.nodes[n]['loc_x']) for ix, n in enumerate(self.g.nodes)
+        }
+
+
+    def _make_labels(self, label_type='name'):
+        return {
+            n: self.g.nodes[n]['label'] if label_type == 'name' else ix for ix, n in enumerate(self.g.nodes)
+        }
+
+    def draw(self, label_type='name'):
+        pos = self._make_pos()
+        labels = self._make_labels(label_type=label_type)
         nx.draw(self.g, pos=pos, with_labels=True, labels=labels)
         plt.show()
+
+    def latex(self, label_type='name'):
+        pos = self._make_pos()
+        labels = self._make_labels(label_type=label_type)
+        return nx.to_latex(self.g, node_label=labels, pos=pos, as_document=False)
 
     def load_from_file(self, filename):
         parsed_data = {

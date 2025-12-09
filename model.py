@@ -341,7 +341,7 @@ class ControllerPlacementPricingProblemWithDelay(MathematicalModel):
         self.ampl.param['p_star'] = p_star
 
 class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
-    def __init__(self, network, P, B, bsc, bcc, eps=1e-9):
+    def __init__(self, network, C, P, B, bsc, bcc, eps=1e-9):
         self._model_file = 'models/mixed_strategy_controller_placement_pricing_with_delay_bc.mod'
         super().__init__(self._model_file)
 
@@ -355,6 +355,7 @@ class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
 
         self.P = P
         self.B = B
+        self.total_controllers = C
 
     def report(self):
         if not self._solved:
@@ -409,6 +410,7 @@ class ControllerPlacementPricingProblemWithDelayAndBC(MathematicalModel):
             self.ampl.param['B_low'] = self.B[0]
             self.ampl.param['B_high'] = self.B[1]            
         self.ampl.param['p_star'] = p_star
+        self.ampl.param['total_controllers'] = self.total_controllers
 
 # PURE IMPLEMENTATIONS
 class CPOP(MathematicalModel):
@@ -611,18 +613,19 @@ class MostDangerousKNodeAttack(MathematicalModel):
 
 
 class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
-    def __init__(self, network, P, B, bcc, bsc, n_differences=1):
+    def __init__(self, network, P, B, n_controllers, bcc, bsc, n_differences=1):
         self._model_file = 'models/feasible_controller_placement_with_delay_and_bc.mod'
         super().__init__(self._model_file)
         self.network = network
         self.P = P
-        self.B  =B
+        self.B = B
         self.bcc = bcc
         self.bsc = bsc
         self.n_differences = n_differences
+        self.n_controllers = n_controllers
 
-    def load_data(self, primary_controllers = [], backup_controllers = []):
-        assert(len(primary_controllers) == len(backup_controllers))
+    def load_data(self, primary_controllers=[], backup_controllers=[]):
+        # assert(len(primary_controllers) == len(backup_controllers))
 
         super().load_data()
 
@@ -641,9 +644,20 @@ class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
         self.ampl.param['m'] = self.n_differences
 
         # Get the lowest
-        self.ampl.param['P'] = self.P[0] if isinstance(self.P, tuple) else self.P
-        self.ampl.param['B'] = self.B[0] if isinstance(self.B, tuple) else self.B
+        if isinstance(self.P, int):
+            self.ampl.param['P_low'] = self.P
+            self.ampl.param['P_high'] = self.P
+        else:
+            self.ampl.param['P_low'] = self.P[0]
+            self.ampl.param['P_high'] = self.P[1]
 
+        if isinstance(self.B, int):
+            self.ampl.param['B_low'] = self.B
+            self.ampl.param['B_high'] = self.B
+        else:
+            self.ampl.param['B_low'] = self.B[0]
+            self.ampl.param['B_high'] = self.B[1]
+        self.ampl.param['num_controllers'] = self.n_controllers
 
     def report(self):
         if not self._solved:
@@ -663,12 +677,34 @@ if __name__ == '__main__':
     from algorithm import one_indices
     n = Network('cost266')
 
-    p = AttackGenerationPricingProblem(n, (3, 6), budget=13, costs='degree')
-    p.load_data([[4, 5, 24, 27, 30]], [1.0])
-    r = p.report()
-    a_star = one_indices(r['a*'])
+    # class FeasibleControllerPlacementWithDelayAndBC(MathematicalModel):
+    #     def __init__(self, network, P, B, bcc, bsc, n_differences=1):
+
+    ps = (5, 8)
+    bs = (0, 0)
+    p = FeasibleControllerPlacementWithDelayAndBC(n, ps, bs, 10, 2000, 2000, n_differences=3)
+    ps = []
+    bs = []
+
+    for i in range(10):
+        p.load_data(ps, bs)
+        p.solve()
+        r = p.report()
+
+        ps.append(one_indices(r['y']))
+        bs.append(one_indices(r['x']))
+        
+        # print(r)
+
+    for p, b in zip(ps, bs):
+        print(f'{p} - {b}')
+
+    # p = AttackGenerationPricingProblem(n, (3, 6), budget=13, costs='degree')
+    # p.load_data([[4, 5, 24, 27, 30]], [1.0])
+    # r = p.report()
+    # a_star = one_indices(r['a*'])
     
-    print(a_star)
+    # print(a_star)
     # primaries = []
     # backups = []
 

@@ -55,12 +55,13 @@ class InitialGenerationWithDelay:
         }
 
 class InitialGenerationWithDelayAndBC:
-    def __init__(self, network, P, B, K, bsc, bcc, n_generations):
+    def __init__(self, network, C, P, B, K, bsc, bcc, n_generations):
         self.P = P
         self.B = B
         self.K = K
         self.network = network
-        self.placement_gen = FeasibleControllerPlacementWithDelayAndBC(network, P, B, bcc, bsc)
+
+        self.placement_gen = FeasibleControllerPlacementWithDelayAndBC(network, P, B, C, bcc, bsc)
         self.n_placement_gens = n_generations
 
     def initialize(self):
@@ -72,14 +73,14 @@ class InitialGenerationWithDelayAndBC:
         backups = []
 
         for i in range(self.n_placement_gens):
-            if i == 0:
-                self.placement_gen.load_data()
-            else:
-                self.placement_gen.load_data(primaries, backups)
-
+            # if i == 0:
+            #     self.placement_gen.load_data()
+            # else:
+            #     self.placement_gen.load_data(primaries, backups)
+            self.placement_gen.load_data(primaries, backups)
             self.placement_gen.solve()
             r = self.placement_gen.report()
-            if one_indices(r['y']) == [] or one_indices(r['x']) == []:
+            if one_indices(r['y']) == [] and one_indices(r['x']) == []:
                 break
 
             prim = one_indices(r['y'])
@@ -87,6 +88,9 @@ class InitialGenerationWithDelayAndBC:
 
             primaries.append(prim)
             backups.append(backup)
+
+        print(primaries)
+        print(backups)
 
         return {
             'primary_controllers': primaries,
@@ -223,16 +227,16 @@ class ControllerOptimizationWithDelay(ControllerPlacementOptimization):
         self.bcc = bcc
 
 class ControllerOptimizationWithDelayAndBC(ControllerPlacementOptimization):
-    def __init__(self, network, P, B, K, bsc, bcc, initialized_placements = 1, attacker_budget=0, attacker_costs=None):
+    def __init__(self, network, C, P, B, K, bsc, bcc, initialized_placements = 1, attacker_budget=0, attacker_costs=None):
         super().__init__(network, 0, K)
         
         self.P = P
         self.B = B
         self.K = K
 
-        self.controller_gen_model = ControllerPlacementPricingProblemWithDelayAndBC(network, P, B, bsc, bcc)
+        self.controller_gen_model = ControllerPlacementPricingProblemWithDelayAndBC(network, C, P, B, bsc, bcc)
         self.attack_gen_model = AttackGenerationPricingProblem(network, K, budget=attacker_budget, costs=attacker_costs)
-        self.initializer_model = InitialGenerationWithDelayAndBC(network, P, B, K, bsc, bcc, initialized_placements)
+        self.initializer_model = InitialGenerationWithDelayAndBC(network, C, P, B, K, bsc, bcc, initialized_placements)
         self.bsc = bsc
         self.bcc = bcc
 

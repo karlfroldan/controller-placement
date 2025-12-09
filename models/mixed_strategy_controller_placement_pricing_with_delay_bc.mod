@@ -23,6 +23,7 @@ var S {a in ATTACKS, COMPONENT_IDS[a]} binary;
 
 var Y {ATTACKS} >= 0;
 
+param total_controllers >= 1 integer;
 # Total number of primary controller nodes
 param P_low >= 1 integer;
 param P_high >= 1 integer;
@@ -44,6 +45,9 @@ s.t. NumberOfPrimaryControllers:
 # (1c)
 s.t. NumberOfBackupControllers:
     B_low <= sum {v in VERTICES} x[v] <= B_high;
+
+s.t. TotalControllers:
+    sum {v in VERTICES} (y[v] + x[v]) <= total_controllers;
 
 # (1d) Respect Controller to controller delay for primary controllers only
 s.t. SatisfyCCDelay {(v, w) in U}:

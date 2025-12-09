@@ -10,10 +10,11 @@ def add1(xs):
 
 n = Network('cost266')
 
+total_controllers = 10
 pc_range = (5, 9)
 bc_range = (2, 4)
-a_range = (3, 9)
-p = ControllerOptimizationWithDelayAndBC(n, pc_range, bc_range, a_range, 2000, 2000, attacker_budget=20, attacker_costs='degree')
+a_range = (3, 8)
+p = ControllerOptimizationWithDelayAndBC(n, total_controllers, pc_range, bc_range, a_range, 2000, 2000, attacker_budget=20, attacker_costs='degree')
 r = p.run()
 
 # print(f'Y*: {r["Y*"]}, Attack length: {len(r["attacks"])}')
